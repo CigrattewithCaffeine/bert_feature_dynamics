@@ -1,0 +1,8 @@
+saved_features/
+visualizations/
+pretrained_models/
+*.npy
+*.pt
+*.ckpt
+*.log
+__pycache__/
