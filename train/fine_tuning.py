@@ -12,8 +12,9 @@ from models.ConvBert_pretrained import Conv2DBertForSequenceClassification
 # from models.ConvFFT_pretrained import ConvFFTBertForSequenceClassification  # todo
 # from models.ConvFFTFusion_pretrained import ConvFFTFusionBertForSequenceClassification  # todo
 from models.ConvBert import Conv2DBertBaseForSequenceClassification
-from models.BaseBert import BaseBertForSequenceClassification
+from models.BaseBert import BaseBertBaseForSequenceClassification
 from datetime import datetime
+from transformers import BertConfig
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
@@ -94,9 +95,11 @@ def get_model(model_type):
     elif model_type == "base_pretrained":
         return BaseBertForSequenceClassification("bert-base-uncased", num_labels=2)
     elif model_type == "conv2D":
-        return Conv2DBertBaseForSequenceClassification(num_labels=2)
+        config = BertConfig(num_labels=2)
+        return Conv2DBertBaseForSequenceClassification(config)
     elif model_type == "base":
-        return BaseBertForSequenceClassification(num_labels=2)
+        config = BertConfig.from_pretrained("bert-base-uncased", num_labels=2)
+        return BaseBertBaseForSequenceClassification(config)
     # elif model_type == "convfft_pretrained":
     #     return ConvFFTBertForSequenceClassification(...)
     # elif model_type == "convfft_fusion_pretrained":
@@ -131,7 +134,7 @@ def main():
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    save_dir = f"saved_features/{args.model_type}_bert_{timestamp}"
+    save_dir = f"/content/drive/MyDrive/bert_feature_outputs/{args.model_type}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
 
     print("Starting training...")

@@ -93,7 +93,7 @@ class Conv2DBertForSequenceClassification(nn.Module):
             labels=labels,
         )
 
-
+"""
 # 简单测试示例（可选）
 if __name__ == "__main__":
     from transformers import BertTokenizer
@@ -108,4 +108,4 @@ if __name__ == "__main__":
     # 测试前向传播
     outputs = model(**inputs)
     print("Logits:", outputs.logits.detach().numpy())
-#"""
+"""

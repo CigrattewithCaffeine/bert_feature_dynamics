@@ -42,7 +42,7 @@ class Conv2DBertBaseForSequenceClassification(nn.Module):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions
         )
-#""""
+""""
 # 简单测试示例（可选）
 if __name__ == "__main__":
     from transformers import BertTokenizer, BertConfig

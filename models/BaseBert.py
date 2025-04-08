@@ -2,34 +2,43 @@ import torch
 from torch import nn
 from transformers import BertConfig, BertModel, PreTrainedModel
 from transformers.modeling_outputs import SequenceClassifierOutput
-import sys, os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-class BaseBertForSequenceClassification(PreTrainedModel):
+
+class BaseBertBaseForSequenceClassification(PreTrainedModel):
     config_class = BertConfig
 
     def __init__(self, config):
         super().__init__(config)
-        self.bert = BertModel(config)  
+        self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
-        self.post_init()  # 初始化權重
+        self.loss_fn = nn.CrossEntropyLoss()
+        self.post_init()
 
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None):
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        token_type_ids=None,
+        labels=None,
+        inputs_embeds=None,
+        output_hidden_states=True,
+    ):
         outputs = self.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            token_type_ids=token_type_ids
+            token_type_ids=token_type_ids,
+            inputs_embeds=inputs_embeds,
+            output_hidden_states=output_hidden_states,
         )
 
-        pooled_output = outputs.pooler_output  # [CLS]
+        pooled_output = outputs.pooler_output
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
 
         loss = None
         if labels is not None:
-            loss_fn = nn.CrossEntropyLoss()
-            loss = loss_fn(logits.view(-1, self.config.num_labels), labels.view(-1))
+            loss = self.loss_fn(logits.view(-1, self.config.num_labels), labels.view(-1))
 
         return SequenceClassifierOutput(
             loss=loss,
