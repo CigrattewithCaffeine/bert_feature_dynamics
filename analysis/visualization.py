@@ -7,6 +7,7 @@ from tqdm import tqdm
 import matplotlib.gridspec as gridspec
 import glob
 import torch
+import json
 
 def visualize_features(features_dict, labels, save_dir, epoch=None, model_name=None):
     """单个模型特征的简单可视化
@@ -77,6 +78,7 @@ def visualize_features(features_dict, labels, save_dir, epoch=None, model_name=N
     plt.close()
 
 
+
 def run_feature_visualization(
     feature_dir: str = None,
     output_dir: str = None,
@@ -88,9 +90,8 @@ def run_feature_visualization(
 ):
     """
     對保存的 CLS 特徵向量進行 PCA 降維 + 可視化，使用真實標籤展示資料點。
-    修改为按epoch批量处理，避免内存爆炸
+    修改为按epoch批量处理，避免内存爆炸，并保存 explained variance
     """
-    # 如果未提供 feature_dir，则根据 model_name 嘗試推斷
     if feature_dir is None:
         if model_name is None:
             raise ValueError("當 feature_dir 為 None 時，必須提供 model_name")
@@ -98,138 +99,113 @@ def run_feature_visualization(
         candidates = [d for d in os.listdir(saved_root) if d.startswith(model_name)]
         if not candidates:
             raise FileNotFoundError(f"未找到與 model_name 匹配的特徵目錄: {model_name}")
-        feature_dir = os.path.join(saved_root, sorted(candidates)[-1])  # 取最新的
+        feature_dir = os.path.join(saved_root, sorted(candidates)[-1])
 
     if output_dir is None:
         output_dir = os.path.join("visualizations", feature_dir.replace("saved_features/", ""))
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # 获取所有 npy 文件并按层和 epoch 排序，但排除标签文件
     feature_files = [f for f in os.listdir(feature_dir) if f.endswith(".npy") and not f.endswith("_labels.npy")]
-    
-    # 色盲友好的颜色调色板
+
     color_palette = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#F0E442", "#56B4E9", "#E69F00", "#000000"]
-    
-    # 修改：按epoch分组处理文件
-    # 首先收集所有epoch和layer信息
+
     epoch_layer_files = {}
     for fname in feature_files:
         base_name = os.path.splitext(fname)[0]
         parts = base_name.split("_")
-        
-        # 提取epoch和layer信息
         epoch = None
         layer = None
-        for i, part in enumerate(parts):
+        for part in parts:
             if part.startswith("layer"):
                 layer = int(part[5:])
             if part.startswith("epoch"):
                 epoch = int(part[5:])
-        
         if epoch is not None and layer is not None:
             if epoch not in epoch_layer_files:
                 epoch_layer_files[epoch] = []
             epoch_layer_files[epoch].append((layer, fname))
-    
-    # 记录所有可视化结果的元数据，用于后续生成汇总图
+
     all_visualization_metadata = []
-    
-    # 按epoch批次处理
+    pca_explained = {}
+
     for epoch, files in tqdm(epoch_layer_files.items(), desc="Processing epochs"):
         epoch_visualizations = []
-        
+        pca_explained[epoch] = {}
+
         for layer, fname in tqdm(files, desc=f"Processing files for epoch {epoch}"):
             path = os.path.join(feature_dir, fname)
-            features = np.load(path)  # 形状: [num_samples, hidden_size]
+            features = np.load(path)
             if max_samples is not None:
                 features = features[:max_samples]
             if features.ndim != 2:
                 print(f"跳过 {fname}: 形状不是二维")
                 continue
-                
-            print(f"处理文件: {fname}, 层: {layer}, 轮次: {epoch}")
-            
-            # 尝试加载对应的标签文件（兼容帶 timestamp 的命名）
+
             label_candidates = [f for f in os.listdir(feature_dir) if f.endswith(f"labels_epoch{epoch}.npy")]
             if label_candidates:
                 labels_path = os.path.join(feature_dir, label_candidates[0])
                 labels = np.load(labels_path)
                 if max_samples is not None:
                     labels = labels[:max_samples]
-                print(f"使用真实标签: {labels_path}")
             else:
                 n_samples = features.shape[0]
                 labels = np.zeros(n_samples, dtype=int)
                 labels[n_samples//2:] = 1
-                print(f"未找到标签文件，使用默认标签划分: epoch{epoch}_labels.npy")
-            
-            # 应用 PCA 降维
+
             pca = PCA(n_components=pca_dim, random_state=random_state)
             features_pca = pca.fit_transform(features)
-            
-            # 获取唯一标签，并确保它们是整数
+
+            pca_explained[epoch][layer] = pca.explained_variance_ratio_[:2].tolist()
+
             unique_labels = np.unique(labels)
-            
-            # 创建图像，禁用编号
+
             plt.figure(figsize=figsize, num=None)
-            
-            # 绘制数据点，根据不同标签使用不同颜色
             for i, label in enumerate(unique_labels):
                 mask = labels == label
-                color_idx = i % len(color_palette)  # 循环使用颜色列表
+                color_idx = i % len(color_palette)
                 plt.scatter(
                     features_pca[mask, 0], 
                     features_pca[mask, 1],
                     c=color_palette[color_idx],
                     label=f'Label {label}',
-                    alpha=0.6,  # 设置透明度为0.6
-                    edgecolors='w',  # 白色边框
-                    linewidth=0.8,  # 边框粗细为0.8
+                    alpha=0.6,
+                    edgecolors='w',
+                    linewidth=0.8,
                     s=80
                 )
-            
-            # 添加标题，包含更多信息
+
             model_info = f"{model_name}, " if model_name else ""
             plt.title(f'Layer {layer}, Epoch {epoch}', fontsize=14)
-            
-            # 添加图例
             plt.legend(loc='best')
-            
-            # 添加坐标轴和网格
             plt.grid(alpha=0.3)
             plt.xlabel(f"PC1", fontsize=12)
             plt.ylabel(f"PC2", fontsize=12)
-            
-            # 移除边框
             ax = plt.gca()
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            
-            # 保存图像
+
             model_prefix = f"{model_name}_" if model_name else ""
             save_path = os.path.join(output_dir, f'{model_prefix}layer{layer}_epoch{epoch}.png')
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
-            
-            # 保存元数据而不是完整数据，节省内存
+
             epoch_visualizations.append({
                 'layer': layer,
                 'epoch': epoch,
-                'pca_data_file': path,  # 保存文件路径而不是数据
+                'pca_data_file': path,
                 'labels_file': labels_path if 'labels_path' in locals() else None,
                 'unique_labels': unique_labels.tolist(),
                 'model_name': model_name
             })
-        
-        # 将当前epoch的元数据添加到汇总列表
-        all_visualization_metadata.extend(epoch_visualizations)
-    
-    # 创建汇总图
-    create_summary_visualization(all_visualization_metadata, color_palette, output_dir, max_samples)
-    
-    print(f"所有可视化图像已保存到: {output_dir}")
 
+        all_visualization_metadata.extend(epoch_visualizations)
+
+    with open(os.path.join(output_dir, "pca_explained_variance.json"), "w") as f:
+        json.dump(pca_explained, f, indent=2)
+
+    print(f"已保存 PCA explained variance 至: {os.path.join(output_dir, 'pca_explained_variance.json')}")
+    print(f"所有可视化图像已保存到: {output_dir}")
 
 def create_summary_visualization(visualizations_metadata, color_palette, output_dir, max_samples=None):
     """

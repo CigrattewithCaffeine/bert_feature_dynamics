@@ -3,14 +3,13 @@ import sys
 import argparse
 import torch
 import numpy as np
+import json
 from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm
 from utils.data_utils import load_sst2
 from utils.train_utils import create_dataloader
 from models.BaseBert_pretrained import BaseBertForSequenceClassification
 from models.ConvBert_pretrained import Conv2DBertForSequenceClassification
-# from models.ConvFFT_pretrained import ConvFFTBertForSequenceClassification  # todo
-# from models.ConvFFTFusion_pretrained import ConvFFTFusionBertForSequenceClassification  # todo
 from models.ConvBert import Conv2DBertBaseForSequenceClassification
 from models.BaseBert import BaseBertBaseForSequenceClassification
 from datetime import datetime
@@ -60,6 +59,7 @@ def save_cls_features(model, dataloader, save_dir, epoch, device):
     model.eval()
     features_dict = {}
     labels_list = []
+    attention_dict = {}
 
     with torch.no_grad():
         for batch in dataloader:
@@ -67,24 +67,31 @@ def save_cls_features(model, dataloader, save_dir, epoch, device):
             outputs = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
-                output_hidden_states=True
+                output_hidden_states=True,
+                output_attentions=True
             )
-
             hidden_states = outputs.hidden_states
+            attentions = outputs.attentions
             labels = batch["labels"].cpu().numpy()
 
             for layer_idx, layer_output in enumerate(hidden_states):
                 cls_features = layer_output[:, 0, :].cpu().numpy()
-                if layer_idx not in features_dict:
-                    features_dict[layer_idx] = []
-                features_dict[layer_idx].append(cls_features)
+                features_dict.setdefault(layer_idx, []).append(cls_features)
+
+            for layer_idx, attn in enumerate(attentions):
+                mean_attn = attn[:, :, 0, :].mean(dim=1).cpu().numpy()
+                attention_dict.setdefault(layer_idx, []).append(mean_attn)
 
             labels_list.append(labels)
 
     os.makedirs(save_dir, exist_ok=True)
-    for layer_idx, features_list in features_dict.items():
-        features = np.concatenate(features_list, axis=0)
+    for layer_idx in features_dict:
+        features = np.concatenate(features_dict[layer_idx], axis=0)
         np.save(os.path.join(save_dir, f"layer{layer_idx}_epoch{epoch}.npy"), features)
+
+    for layer_idx in attention_dict:
+        attn_scores = np.concatenate(attention_dict[layer_idx], axis=0)
+        np.save(os.path.join(save_dir, f"attention_layer{layer_idx}_epoch{epoch}.npy"), attn_scores)
 
     labels = np.concatenate(labels_list, axis=0)
     np.save(os.path.join(save_dir, f"labels_epoch{epoch}.npy"), labels)
@@ -100,10 +107,6 @@ def get_model(model_type):
     elif model_type == "base":
         config = BertConfig.from_pretrained("bert-base-uncased", num_labels=2)
         return BaseBertBaseForSequenceClassification(config)
-    # elif model_type == "convfft_pretrained":
-    #     return ConvFFTBertForSequenceClassification(...)
-    # elif model_type == "convfft_fusion_pretrained":
-    #     return ConvFFTFusionBertForSequenceClassification(...)
     else:
         raise ValueError(f"Unsupported model_type: {model_type}")
 
@@ -137,6 +140,8 @@ def main():
     save_dir = f"/content/drive/MyDrive/bert_feature_outputs/{args.model_type}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
 
+    metrics = []
+
     print("Starting training...")
     for epoch in range(args.num_epochs):
         print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
@@ -144,10 +149,22 @@ def main():
         val_loss, accuracy = evaluate(model, val_loader, device)
         print(f"Train Loss: {train_loss:.4f}")
         print(f"Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
+
         save_cls_features(model, feature_loader, save_dir, epoch, device)
         print(f"Saved features for epoch {epoch + 1}")
+
+        metrics.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_accuracy": accuracy
+        })
+
+        with open(os.path.join(save_dir, "training_metrics.json"), "w") as f:
+            json.dump(metrics, f, indent=2)
 
     print("Training completed!")
 
 if __name__ == "__main__":
     main()
+
