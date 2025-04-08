@@ -84,13 +84,24 @@ class Conv2DBertForSequenceClassification(nn.Module):
         # 替换embedding层
         self.model.bert.embeddings = Conv2DEmbeddings(config)
         
-    def forward(self, input_ids=None, token_type_ids=None, attention_mask=None, labels=None, output_hidden_states=False):
+    def forward(
+        self,
+        input_ids=None,
+        token_type_ids=None,
+        attention_mask=None,
+        labels=None,
+        output_hidden_states=True,
+        output_attentions=False,  
+    ):
         self.model.config.output_hidden_states = output_hidden_states
+        self.model.config.output_attentions = output_attentions  
         return self.model(
             input_ids=input_ids,
             token_type_ids=token_type_ids,
             attention_mask=attention_mask,
             labels=labels,
+            output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions,  
         )
 
 """

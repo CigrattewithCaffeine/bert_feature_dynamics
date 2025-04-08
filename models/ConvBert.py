@@ -19,12 +19,13 @@ class Conv2DBertBaseForSequenceClassification(nn.Module):
         self.dropout = nn.Dropout(self.config.hidden_dropout_prob)
         self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
 
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None, output_hidden_states=False):
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None, output_hidden_states=True,output_attentions=False):
         outputs = self.bert(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
-            output_hidden_states=output_hidden_states
+            output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions
         )
 
         pooled_output = outputs.pooler_output  # [CLS]

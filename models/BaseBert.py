@@ -23,6 +23,7 @@ class BaseBertBaseForSequenceClassification(PreTrainedModel):
         labels=None,
         inputs_embeds=None,
         output_hidden_states=True,
+        output_attentions=False,
     ):
         outputs = self.bert(
             input_ids=input_ids,
@@ -30,6 +31,7 @@ class BaseBertBaseForSequenceClassification(PreTrainedModel):
             token_type_ids=token_type_ids,
             inputs_embeds=inputs_embeds,
             output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions,
         )
 
         pooled_output = outputs.pooler_output

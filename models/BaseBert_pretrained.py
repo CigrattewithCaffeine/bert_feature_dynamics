@@ -21,7 +21,8 @@ class BaseBertForSequenceClassification(nn.Module):
         token_type_ids=None, 
         labels=None, 
         inputs_embeds=None,
-        output_hidden_states=False
+        output_hidden_states=True,
+        output_attentions=False
     ):
         # 调用预训练模型的 forward 方法，支持输出 hidden states
         return self.model(
@@ -30,7 +31,8 @@ class BaseBertForSequenceClassification(nn.Module):
             token_type_ids=token_type_ids,
             labels=labels,
             inputs_embeds=inputs_embeds,
-            output_hidden_states=output_hidden_states
+            output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions
         )
 """
 # 简单测试示例（可选）
