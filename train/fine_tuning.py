@@ -51,6 +51,10 @@ def evaluate(model, val_loader, device):
             correct += (predictions == batch["labels"]).sum().item()
             total += batch["labels"].size(0)
 
+    if hasattr(model, "model") and hasattr(model.model, "bert") and hasattr(model.model.bert, "embeddings"):
+        if hasattr(model.model.bert.embeddings, "residual_weight"):
+            print(f"Residual weight: {model.model.bert.embeddings.residual_weight.item():.4f}")
+
     accuracy = correct / total
     avg_loss = total_loss / len(val_loader)
     return avg_loss, accuracy
@@ -62,14 +66,22 @@ def save_cls_features(model, dataloader, save_dir, epoch, device):
     attention_dict = {}
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Extracting features"):
             batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
+                token_type_ids=batch.get("token_type_ids", None),
                 output_hidden_states=True,
                 output_attentions=True
             )
+            
+            # 调试输出，检查是否正确返回注意力权重
+            if epoch == 0 and len(features_dict) == 0:
+                print("Hidden states available:", outputs.hidden_states is not None)
+                print("Attention weights available:", outputs.attentions is not None)
+                if hasattr(outputs, "attentions") and outputs.attentions:
+                    print("Attention shape:", [a.shape for a in outputs.attentions])
             hidden_states = outputs.hidden_states
             attentions = outputs.attentions
             labels = batch["labels"].cpu().numpy()
@@ -110,12 +122,48 @@ def get_model(model_type):
     else:
         raise ValueError(f"Unsupported model_type: {model_type}")
 
+def freeze_bert_layers(model, num_layers_to_freeze, freeze_embeddings=True):
+    """冻结BERT模型的指定层数"""
+    if hasattr(model, "model"):  # 处理包装模型的情况
+        bert_model = model.model.bert
+    else:
+        bert_model = model.bert
+    
+    # 根据参数决定是否冻结嵌入层
+    if freeze_embeddings:
+        for param in bert_model.embeddings.parameters():
+            param.requires_grad = False
+        print("Embeddings layer frozen")
+    else:
+        print("Embeddings layer kept trainable")
+    
+    # 冻结编码器层
+    for i in range(min(12, num_layers_to_freeze)):
+        if hasattr(bert_model.encoder.layer, str(i)):
+            for param in bert_model.encoder.layer[i].parameters():
+                param.requires_grad = False
+            print(f"Encoder layer {i} frozen")
+    
+    # 打印参数的梯度状态
+    print("Parameter gradient status:")
+    for name, param in model.named_parameters():
+        print(f"{name}: {param.requires_grad}")
+
+def unfreeze_all(model):
+    """解冻所有层"""
+    for param in model.parameters():
+        param.requires_grad = True
+    print("All layers unfrozen")
+
 def main():
     parser = argparse.ArgumentParser(description="Train and extract BERT CLS features")
     parser.add_argument("--model_type", type=str, required=True, help="Model type to use")
     parser.add_argument("--num_epochs", type=int, default=25, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--warmup_epochs", type=int, default=3, help="Number of warmup epochs")
+    parser.add_argument("--freeze_layers", type=int, default=12, help="Number of layers to freeze during warmup (0-12)")
+    parser.add_argument("--freeze_embeddings", type=int, default=1, help="freeze embeddings layer or not")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,6 +180,13 @@ def main():
     model = get_model(args.model_type)
     model = model.to(device)
 
+    # 首先冻结指定的层
+    if args.warmup_epochs > 0 and args.freeze_layers > 0:
+        print(f"Starting with {args.freeze_layers} layers frozen for {args.warmup_epochs} epochs")
+    # 将args.freeze_embeddings转换为布尔值
+        freeze_emb = args.freeze_embeddings == 1
+        freeze_bert_layers(model, args.freeze_layers, freeze_embeddings=freeze_emb)
+
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     total_steps = len(train_loader) * args.num_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
@@ -144,6 +199,16 @@ def main():
 
     print("Starting training...")
     for epoch in range(args.num_epochs):
+        # 如果达到了预热结束的条件，解冻所有层
+        if epoch == args.warmup_epochs and args.warmup_epochs > 0:
+            print("Warmup complete, unfreezing all layers")
+            unfreeze_all(model)
+            # 更新优化器，因为有些参数现在变为可训练了
+            optimizer = AdamW(model.parameters(), lr=args.learning_rate)
+            # 重新计算总步数并更新scheduler
+            remaining_steps = len(train_loader) * (args.num_epochs - epoch)
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=remaining_steps)
+
         print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
         train_loss = train_epoch(model, train_loader, optimizer, scheduler, device)
         val_loss, accuracy = evaluate(model, val_loader, device)
@@ -167,4 +232,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

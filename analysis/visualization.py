@@ -205,6 +205,12 @@ def run_feature_visualization(
         json.dump(pca_explained, f, indent=2)
 
     print(f"已保存 PCA explained variance 至: {os.path.join(output_dir, 'pca_explained_variance.json')}")
+    create_summary_visualization(
+        visualizations_metadata=all_visualization_metadata,
+        color_palette=color_palette,
+        output_dir=output_dir,
+        max_samples=max_samples
+    )
     print(f"所有可视化图像已保存到: {output_dir}")
 
 def create_summary_visualization(visualizations_metadata, color_palette, output_dir, max_samples=None):
