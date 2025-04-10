@@ -14,6 +14,17 @@ from models.ConvBert import Conv2DBertBaseForSequenceClassification
 from models.BaseBert import BaseBertBaseForSequenceClassification
 from datetime import datetime
 from transformers import BertConfig
+import random
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(42)
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
@@ -161,8 +172,8 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=25, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
-    parser.add_argument("--warmup_epochs", type=int, default=3, help="Number of warmup epochs")
-    parser.add_argument("--freeze_layers", type=int, default=12, help="Number of layers to freeze during warmup (0-12)")
+    parser.add_argument("--warmup_epochs", type=int, default=0, help="Number of warmup epochs")
+    parser.add_argument("--freeze_layers", type=int, default=0, help="Number of layers to freeze during warmup (0-12)")
     parser.add_argument("--freeze_embeddings", type=int, default=1, help="freeze embeddings layer or not")
     args = parser.parse_args()
 
@@ -218,11 +229,16 @@ def main():
         save_cls_features(model, feature_loader, save_dir, epoch, device)
         print(f"Saved features for epoch {epoch + 1}")
 
+        residual_weight = None
+        if hasattr(model.bert.embeddings, "residual_weight"):
+            residual_weight = model.bert.embeddings.residual_weight.item()
+
         metrics.append({
             "epoch": epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "val_accuracy": accuracy
+            "val_accuracy": accuracy,
+            "residual_weight": residual_weight
         })
 
         with open(os.path.join(save_dir, "training_metrics.json"), "w") as f:
