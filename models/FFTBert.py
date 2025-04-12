@@ -172,7 +172,7 @@ class FFTBertModel(BertPreTrainedModel): # 继承以复用 _init_weights
 
 
 # --- 用于序列分类的 FFT Bert 模型 (从头初始化) ---
-class FFTBertForSequenceClassification(BertPreTrainedModel):
+class FFTBertBaseForSequenceClassification(BertPreTrainedModel):
     """
     用于序列分类的 FFT-BERT 模型 (从头随机初始化)。
     使用方法:

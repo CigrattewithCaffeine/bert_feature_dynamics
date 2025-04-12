@@ -12,6 +12,8 @@ from models.BaseBert_pretrained import BaseBertForSequenceClassification
 from models.ConvBert_pretrained import Conv2DBertForSequenceClassification
 from models.ConvBert import Conv2DBertBaseForSequenceClassification
 from models.BaseBert import BaseBertBaseForSequenceClassification
+from models.FFTBert import FFTBertBaseForSequenceClassification
+from models.FFTBert_pretrained import FFTBertForSequenceClassification
 from datetime import datetime
 from transformers import BertConfig
 import random
@@ -125,11 +127,16 @@ def get_model(model_type):
     elif model_type == "base_pretrained":
         return BaseBertForSequenceClassification("bert-base-uncased", num_labels=2)
     elif model_type == "conv2D":
-        config = BertConfig(num_labels=2)
+        config = BertConfig.from_pretrained("bert-base-uncased", num_labels=2)
         return Conv2DBertBaseForSequenceClassification(config)
     elif model_type == "base":
         config = BertConfig.from_pretrained("bert-base-uncased", num_labels=2)
         return BaseBertBaseForSequenceClassification(config)
+    elif model_type == "fft":
+        config = BertConfig.from_pretrained("bert-base-uncased", num_labels=2)
+        return FFTBertBaseForSequenceClassification(config)
+    elif model_type == "fft_pretrained":
+        return FFTBertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=2)
     else:
         raise ValueError(f"Unsupported model_type: {model_type}")
 
@@ -218,7 +225,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--warmup_epochs", type=int, default=0, help="Number of warmup epochs")
     parser.add_argument("--freeze_layers", type=int, default=0, help="Number of layers to freeze during warmup (0-12)")
-    parser.add_argument("--freeze_embeddings", type=int, default=1, help="freeze embeddings layer or not")
+    parser.add_argument("--freeze_embeddings", type=int, default=0, help="freeze embeddings layer or not")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
