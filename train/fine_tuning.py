@@ -134,31 +134,75 @@ def get_model(model_type):
         raise ValueError(f"Unsupported model_type: {model_type}")
 
 def freeze_bert_layers(model, num_layers_to_freeze, freeze_embeddings=True):
-    """冻结BERT模型的指定层数"""
-    if hasattr(model, "model"):  # 处理包装模型的情况
-        bert_model = model.model.bert
-    else:
+    """冻结BERT模型的指定层数，并加入更详细的调试打印"""
+    print(f"\n--- Entering freeze_bert_layers ---")
+    print(f"Attempting to freeze {num_layers_to_freeze} encoder layers.")
+    print(f"Parameter freeze_embeddings: {freeze_embeddings}")
+
+    # 检查模型结构，获取核心 bert 模型
+    bert_model = None
+    if hasattr(model, "bert"): # BertForSequenceClassification 通常直接有 .bert
         bert_model = model.bert
-    
-    # 根据参数决定是否冻结嵌入层
-    if freeze_embeddings:
-        for param in bert_model.embeddings.parameters():
-            param.requires_grad = False
-        print("Embeddings layer frozen")
+        print("Accessing model parameters via model.bert")
+    elif hasattr(model, "model") and hasattr(model.model, "bert"): # 有些包装可能在 .model.bert
+        bert_model = model.model.bert
+        print("Accessing model parameters via model.model.bert")
     else:
-        print("Embeddings layer kept trainable")
-    
+        print("[ERROR] Cannot find bert model structure (model.bert or model.model.bert)")
+        # 在这里可能需要报错或采取其他措施
+        return # 提前退出，防止后续出错
+
+    # 根据参数决定是否冻结嵌入层
+    print("\nProcessing Embeddings Layer...")
+    if freeze_embeddings:
+        print("  Action: Freezing embeddings...")
+        count_emb_frozen = 0
+        for name, param in bert_model.embeddings.named_parameters():
+            param.requires_grad = False
+            # print(f"    Frozen: embeddings.{name}") # 可以取消注释看细节
+            count_emb_frozen += 1
+        print(f"  Result: Embeddings layer frozen ({count_emb_frozen} parameters).")
+    else:
+        print("  Action: Keeping embeddings trainable.")
+        # 可选：显式设置为 True (虽然默认应该是 True)
+        count_emb_trainable = 0
+        for name, param in bert_model.embeddings.named_parameters():
+            param.requires_grad = True
+            # print(f"    Trainable: embeddings.{name}")
+            count_emb_trainable += 1
+        print(f"  Result: Embeddings layer kept trainable ({count_emb_trainable} parameters).")
+
     # 冻结编码器层
-    for i in range(min(12, num_layers_to_freeze)):
-        if hasattr(bert_model.encoder.layer, str(i)):
-            for param in bert_model.encoder.layer[i].parameters():
+    print("\nProcessing Encoder Layers...")
+    actual_layers_to_freeze = min(bert_model.config.num_hidden_layers, num_layers_to_freeze) # 确保不超过实际层数
+    print(f"  Attempting to freeze first {actual_layers_to_freeze} encoder layers (0 to {actual_layers_to_freeze - 1})...")
+    for i in range(actual_layers_to_freeze):
+        # 检查层是否存在
+        if i < len(bert_model.encoder.layer):
+            count_layer_frozen = 0
+            print(f"  Freezing Encoder layer {i}...")
+            for name, param in bert_model.encoder.layer[i].named_parameters():
                 param.requires_grad = False
-            print(f"Encoder layer {i} frozen")
-    
-    # 打印参数的梯度状态
-    print("Parameter gradient status:")
+                # print(f"    Frozen: encoder.layer.{i}.{name}")
+                count_layer_frozen += 1
+            print(f"    Layer {i} frozen ({count_layer_frozen} parameters).")
+        else:
+            print(f"  Warning: Encoder layer {i} not found (Model has only {len(bert_model.encoder.layer)} layers).")
+
+    # 再次打印所有参数的最终梯度状态以供核对
+    print("\n--- Final Parameter Gradient Status Check ---")
+    trainable_params_count = 0
+    frozen_params_count = 0
     for name, param in model.named_parameters():
-        print(f"{name}: {param.requires_grad}")
+        status = "Trainable" if param.requires_grad else "FROZEN"
+        print(f"  {name}: {status}")
+        if param.requires_grad:
+            trainable_params_count += param.numel()
+        else:
+            frozen_params_count += param.numel()
+    print(f"Total Trainable Parameters: {trainable_params_count}")
+    print(f"Total Frozen Parameters: {frozen_params_count}")
+    print(f"--- Exiting freeze_bert_layers ---\n")
 
 def unfreeze_all(model):
     """解冻所有层"""
