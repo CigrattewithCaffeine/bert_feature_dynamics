@@ -47,15 +47,14 @@ class Conv2DEmbeddings(nn.Module):
 
         word_embeds = inputs_embeds # [B, L, D]
         pos_embeds = self.position_embeddings(position_ids) # [B, L, D]
-        token_type_embeds = self.token_type_embeddings(token_type_ids) # [B, L, D]
 
         word_embeds_reshaped = word_embeds.unsqueeze(1)
         pos_embeds_reshaped = pos_embeds.unsqueeze(1)
         combined_embeds = torch.cat([word_embeds_reshaped, pos_embeds_reshaped], dim=1)
         conv_output = self.interactive_conv(combined_embeds)
-        fused_embeddings = conv_output.squeeze(1)
+        fused_embeddings = self.activation(conv_output.squeeze(1))
 
-        embeddings = fused_embeddings + token_type_embeds # [B, L, D]
+        embeddings = fused_embeddings # [B, L, D]
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings

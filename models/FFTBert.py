@@ -51,7 +51,6 @@ class FFTBertEmbeddings(HFBertEmbeddings):
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
         position_embeddings = self.position_embeddings(position_ids)
 
         # --- 2. 准备并应用 FFT 融合 ---
@@ -64,11 +63,11 @@ class FFTBertEmbeddings(HFBertEmbeddings):
         fused_embeddings = self.fft_circular_convolution(inputs_embeds, expanded_pos_emb)
 
         # --- (可选) L2 归一化 ---
-        # fused_embeddings = self.normalize_vector(fused_embeddings)
-        # print("[DEBUG] L2 Normalization Applied to FFT Embeddings")
+        #fused_embeddings = self.normalize_vector(fused_embeddings)
+        #print("[DEBUG] L2 Normalization Applied to FFT Embeddings")
 
         # --- 3. 合并与后续处理 ---
-        final_embeddings = fused_embeddings + token_type_embeddings
+        final_embeddings = fused_embeddings 
         final_embeddings = self.LayerNorm(final_embeddings)
         final_embeddings = self.dropout(final_embeddings)
 

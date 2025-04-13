@@ -53,10 +53,6 @@ class FFTBertEmbeddings(HFBertEmbeddings):
 
         # 获取位置嵌入
         position_embeddings = self.position_embeddings(position_ids) # Shape: [1, L, D] or similar
-
-        # 获取类型嵌入
-        token_type_embeddings = self.token_type_embeddings(token_type_ids) # Shape: [B, L, D]
-
         # --- 2. 准备并应用 FFT 融合 ---
         batch_size = input_shape[0]
         # 确保 position_embeddings 适配 batch 和 seq_length
@@ -71,11 +67,11 @@ class FFTBertEmbeddings(HFBertEmbeddings):
 
         # --- (可选) L2 归一化 ---
         # 尝试注释掉/取消注释这行来进行实验对比
-        # fused_embeddings = self.normalize_vector(fused_embeddings)
-        # print("[DEBUG] L2 Normalization Applied to FFT Embeddings")
+        #fused_embeddings = self.normalize_vector(fused_embeddings)
+        #print("[DEBUG] L2 Normalization Applied to FFT Embeddings")
 
         # --- 3. 合并与后续处理 ---
-        final_embeddings = fused_embeddings + token_type_embeddings
+        final_embeddings = fused_embeddings
         final_embeddings = self.LayerNorm(final_embeddings)
         final_embeddings = self.dropout(final_embeddings)
 
