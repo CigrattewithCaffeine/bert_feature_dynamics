@@ -410,7 +410,9 @@ def main():
 
     optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
     total_steps = len(train_loader) * args.num_epochs
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+    warmup_ratio = 0.06 
+    num_warmup_steps = int(total_steps * warmup_ratio)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps=total_steps)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     try:
@@ -435,6 +437,7 @@ def main():
             unfreeze_all(model)
             print("Re-initializing optimizer for all parameters...")
             optimizer = AdamW(model.parameters(), lr=args.learning_rate)
+            remaining_steps = len(train_loader) * (args.num_epochs - epoch)
             remaining_steps = len(train_loader) * (args.num_epochs - epoch)
             print(f"Re-initializing scheduler for remaining {remaining_steps} steps...")
             scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=remaining_steps)
