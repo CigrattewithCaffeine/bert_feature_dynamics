@@ -28,7 +28,7 @@ class Conv2DBertBaseForSequenceClassification(nn.Module):
             output_attentions=output_attentions
         )
 
-        pooled_output = outputs.pooler_output  # [CLS]
+        pooled_output = outputs.pooler_output  
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
 
