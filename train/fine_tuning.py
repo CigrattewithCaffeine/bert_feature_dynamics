@@ -383,6 +383,7 @@ def main():
     parser.add_argument("--warmup_epochs", type=int, default=0, help="Number of warmup epochs")
     parser.add_argument("--freeze_layers", type=int, default=0, help="Number of layers to freeze during warmup (0-12)")
     parser.add_argument("--freeze_embeddings", type=int, default=0, help="freeze embeddings layer or not (1 for True, 0 for False)")
+    parser.add_argument("--early_stop_patience", type=int, default=25, help="Number of epochs to wait for val_loss improvement before stopping early")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -429,7 +430,8 @@ def main():
 
     metrics = []
     is_conv2d_model_main = isinstance(model, (Conv2DBertForSequenceClassification, Conv2DBertBaseForSequenceClassification))
-
+    best_val_loss = float('inf')
+    early_stop_counter = 0
     print("Starting training...")
     for epoch in range(args.num_epochs):
         if epoch == args.warmup_epochs and args.warmup_epochs > 0 and (args.freeze_layers > 0 or args.freeze_embeddings == 1):
@@ -530,7 +532,15 @@ def main():
                 json.dump(metrics, f, indent=2)
         except Exception as e:
             print(f"Error saving metrics to {metrics_path}: {e}")
-
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+            if early_stop_counter >= args.early_stop_patience:
+                print(f"Early stopping triggered at epoch {epoch + 1}. Best val loss: {best_val_loss:.4f}")
+                break
     print("Training completed!")
     final_metrics_path = os.path.join(save_dir, "training_metrics.json")
     print(f"Final metrics saved to: {final_metrics_path}")
