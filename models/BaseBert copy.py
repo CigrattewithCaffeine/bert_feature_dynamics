@@ -1,18 +1,15 @@
 import torch
-import torch.nn as nn
-from transformers import BertConfig, BertModel,PreTrainedModel
+from torch import nn
+from transformers import BertConfig, BertModel, PreTrainedModel
 from transformers.modeling_outputs import SequenceClassifierOutput
-import sys, os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from ConvBert_pretrained import Conv2DEmbeddings 
 
-class Conv2DBertBaseForSequenceClassification(PreTrainedModel):
+class BaseBertBaseForSequenceClassification(PreTrainedModel):
     config_class = BertConfig
+
     def __init__(self, config):
         super().__init__(config)
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.bert.embeddings = Conv2DEmbeddings(self.config)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
         self.loss_fn = nn.CrossEntropyLoss()
@@ -62,9 +59,8 @@ if __name__ == "__main__":
         num_attention_heads=12,
         num_labels=2       
     )
-
-    model = Conv2DBertBaseForSequenceClassification(config)
     
+    model = BaseBertForSequenceClassification(config)
     pretrained_model_name = "pretrained_models/bert-base-uncased"
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
     
@@ -85,8 +81,7 @@ if __name__ == "__main__":
     print("Logits:", outputs.logits.numpy())
     pred_label = outputs.logits.argmax(dim=-1).item()
     print("Predicted label:", pred_label)
-    
     if outputs.hidden_states is not None:
         for idx, hidden_state in enumerate(outputs.hidden_states):
             print(f"Layer {idx} hidden state shape:", hidden_state.shape)
-#"""
+"""
