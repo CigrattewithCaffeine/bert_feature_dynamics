@@ -53,11 +53,11 @@ class BaseBertBaseForSequenceClassification(PreTrainedModel):
 if __name__ == "__main__":
     from transformers import BertTokenizer, BertConfig
     config = BertConfig(
-        vocab_size=30522,  # 词表大小
-        hidden_size=768,   # 隐藏层大小
+        vocab_size=30522,  
+        hidden_size=768,   
         num_hidden_layers=12,
         num_attention_heads=12,
-        num_labels=2       # 分类数量
+        num_labels=2       
     )
     
     model = BaseBertForSequenceClassification(config)
@@ -73,7 +73,7 @@ if __name__ == "__main__":
         max_length=128
     )
     
-    model.eval()  # 设置为评估模式
+    model.eval()  
     with torch.no_grad():
         outputs = model(**inputs)
         
