@@ -4,10 +4,10 @@ from transformers import BertForSequenceClassification, BertConfig
     
 class Conv2DEmbeddings(nn.Module):
     """
-    使用Conv2D的交互式嵌入：
-    将token embedding和position embedding作为不同通道输入到2D卷积中，
-    然后与token type embedding相加，后续进行LayerNorm和dropout。
-    支持HuggingFace标准接口，包括inputs_embeds。
+    Interactive embeddings using Conv2D:
+    Takes token embedding and position embedding as different channels into 2D convolution,
+    then adds token type embedding, followed by LayerNorm and dropout.
+    Supports HuggingFace standard interface, including inputs_embeds.
     """
     def __init__(self, config):
         super(Conv2DEmbeddings, self).__init__()
@@ -16,14 +16,13 @@ class Conv2DEmbeddings(nn.Module):
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
 
         self.interactive_conv = nn.Conv2d(
-            in_channels=2,      # word 和 position 作为两个输入通道
-            out_channels=1,     # 输出融合后的单一通道
-            kernel_size=(1, 1), # 卷积核大小改为 1x1
-            padding=(0, 0),     # 1x1 卷积对应的 padding 是 0
-            bias=False          # 通常可以不用 bias，因为后续有 LayerNorm 的 beta
+            in_channels=2,     # two input channels: token and position embeddings
+            out_channels=1,     # one output channel
+            kernel_size=(1, 1), # Kernel size
+            padding=(0, 0),  
+            bias=False        
         )
         
-        # 可选：添加残差连接的权重
         self.activation = nn.GELU()
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -45,8 +44,8 @@ class Conv2DEmbeddings(nn.Module):
         if token_type_ids is None:
             token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
-        word_embeds = inputs_embeds # [B, L, D]
-        pos_embeds = self.position_embeddings(position_ids) # [B, L, D]
+        word_embeds = inputs_embeds 
+        pos_embeds = self.position_embeddings(position_ids) 
 
         word_embeds_reshaped = word_embeds.unsqueeze(1)
         pos_embeds_reshaped = pos_embeds.unsqueeze(1)
@@ -61,10 +60,10 @@ class Conv2DEmbeddings(nn.Module):
 
 class Conv2DBertForSequenceClassification(nn.Module):
     """
-    Conv2D BERT模型：
-    1. 加载预训练的BertForSequenceClassification。
-    2. 替换其bert.embeddings为自定义的Conv2DEmbeddings。
-    3. 其余部分保持不变，直接用于微调下游任务（如二分类）。
+    Conv2D BERT model:
+    1. Loads a pretrained BertForSequenceClassification.
+    2. Replaces its bert.embeddings with custom Conv2DEmbeddings.
+    3. Keeps the rest unchanged, ready for fine-tuning on downstream tasks (e.g., binary classification).
     """
     def __init__(self, pretrained_model_name_or_path, num_labels=2):
         super(Conv2DBertForSequenceClassification, self).__init__()
@@ -72,8 +71,6 @@ class Conv2DBertForSequenceClassification(nn.Module):
         config.output_hidden_states = True 
         self.config = config
         self.model = BertForSequenceClassification.from_pretrained(pretrained_model_name_or_path, config=config)
-        
-        # 替换embedding层
         self.model.bert.embeddings = Conv2DEmbeddings(config)
         
     def forward(
@@ -83,13 +80,10 @@ class Conv2DBertForSequenceClassification(nn.Module):
         attention_mask=None,
         labels=None,
         output_hidden_states=True,
-        output_attentions=True,  # 改为默认True
+        output_attentions=True,  
     ):
-        # 直接修改模型的配置
         self.model.config.output_hidden_states = output_hidden_states
         self.model.config.output_attentions = output_attentions
-    
-        # 确保参数正确传递给下层模型
         outputs = self.model(
             input_ids=input_ids,
             token_type_ids=token_type_ids,
@@ -102,18 +96,14 @@ class Conv2DBertForSequenceClassification(nn.Module):
 
 
 """
-# 简单测试示例（可选）
+# test sample
 if __name__ == "__main__":
     from transformers import BertTokenizer
-
     pretrained_model_name = "pretrained_models/bert-base-uncased"
     model = Conv2DBertForSequenceClassification(pretrained_model_name, num_labels=2)
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
-
     sample_text = "This movie is amazing."
     inputs = tokenizer(sample_text, return_tensors="pt")
-
-    # 测试前向传播
     outputs = model(**inputs)
     print("Logits:", outputs.logits.detach().numpy())
 """
