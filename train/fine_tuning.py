@@ -411,7 +411,7 @@ def main():
 
     optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
     total_steps = len(train_loader) * args.num_epochs
-    warmup_ratio = 0.06 
+    warmup_ratio = 0.1 
     num_warmup_steps = int(total_steps * warmup_ratio)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps=total_steps)
 
