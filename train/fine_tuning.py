@@ -40,42 +40,34 @@ def calculate_metrics(param):
 
 def collect_grad_metrics(model):
     grad_metrics = {}
-    
-    # 检查主模型是否是Conv2D类型的直接实例
+    # check model type
     is_direct_conv2d = isinstance(model, (Conv2DBertForSequenceClassification, Conv2DBertBaseForSequenceClassification))
-    
-    # 检查是否是通过model.model访问的Conv2D结构
     is_nested_conv2d = False
     if hasattr(model, 'model') and isinstance(model.model, BertForSequenceClassification):
         if hasattr(model.model, 'bert') and hasattr(model.model.bert, 'embeddings'):
             is_nested_conv2d = hasattr(model.model.bert.embeddings, 'interactive_conv')
     
-    # 获取embeddings梯度
+    # capture embeddings gradients
     if hasattr(model, 'bert') and hasattr(model.bert, 'embeddings'):
-        # 直接访问模式
         embeddings = model.bert.embeddings
     elif hasattr(model, 'model') and hasattr(model.model, 'bert') and hasattr(model.model.bert, 'embeddings'):
-        # 嵌套访问模式
         embeddings = model.model.bert.embeddings
     else:
         embeddings = None
     
-    # 收集词嵌入和位置嵌入的梯度
+    # collect gradients for embeddings
     if embeddings is not None:
         if hasattr(embeddings, 'word_embeddings') and embeddings.word_embeddings.weight.grad is not None:
             grad_metrics["word_emb_grad_norm"] = torch.norm(embeddings.word_embeddings.weight.grad).item()
         if hasattr(embeddings, 'position_embeddings') and embeddings.position_embeddings.weight.grad is not None:
             grad_metrics["pos_emb_grad_norm"] = torch.norm(embeddings.position_embeddings.weight.grad).item()
-        
-        # 特别关注interactive_conv的梯度
         if hasattr(embeddings, 'interactive_conv') and embeddings.interactive_conv.weight.grad is not None:
             grad_metrics["interactive_conv_grad_norm"] = torch.norm(embeddings.interactive_conv.weight.grad).item()
-            # 添加更详细的卷积核梯度信息
             if embeddings.interactive_conv.weight.grad.numel() > 0:
                 grad_metrics["interactive_conv_grad_mean"] = embeddings.interactive_conv.weight.grad.abs().mean().item()
                 grad_metrics["interactive_conv_grad_max"] = embeddings.interactive_conv.weight.grad.abs().max().item()
     
-    # 获取attention layers梯度
+    # collect gradients for attention layers
     if hasattr(model, 'bert') and hasattr(model.bert, 'encoder') and hasattr(model.bert.encoder, 'layer'):
         encoder_layers = model.bert.encoder.layer
     elif hasattr(model, 'model') and hasattr(model.model, 'bert') and hasattr(model.model.bert, 'encoder'):
@@ -91,7 +83,7 @@ def collect_grad_metrics(model):
                     if layer.attention.self.query.weight.grad is not None:
                         grad_metrics[f"attn_{layer_idx+1}_query_grad_norm"] = torch.norm(layer.attention.self.query.weight.grad).item()
     
-    # 获取classifier梯度
+    # collect gradients for classifier
     if hasattr(model, 'classifier') and model.classifier.weight.grad is not None:
         grad_metrics["classifier_grad_norm"] = torch.norm(model.classifier.weight.grad).item()
     elif hasattr(model, 'model') and hasattr(model.model, 'classifier') and model.model.classifier.weight.grad is not None:
@@ -116,7 +108,6 @@ def train_epoch(model, train_loader, optimizer, scheduler, device, model_type, e
         if batch_idx == 0:
             print(f"\n--- Gradient Debug Info (Epoch {epoch}, Batch 0) ---")
             
-            # Embeddings
             if hasattr(model, 'bert') and hasattr(model.bert, 'embeddings'):
                 if hasattr(model.bert.embeddings, 'word_embeddings') and model.bert.embeddings.word_embeddings.weight.grad is not None:
                     print(f"  Word Embeddings Grad Norm: {torch.norm(model.bert.embeddings.word_embeddings.weight.grad).item():.4f}")
@@ -149,9 +140,8 @@ def train_epoch(model, train_loader, optimizer, scheduler, device, model_type, e
             else:
                 print("  Classifier Head Grad: N/A (or frozen)")
 
-            # Conv2D Specific Debug Prints
+            # Conv2D Debug Prints
             if is_conv2d_model:
-                # 定位并检查interactive_conv
                 interactive_conv = None
                 if hasattr(model, 'bert') and hasattr(model.bert, 'embeddings') and hasattr(model.bert.embeddings, 'interactive_conv'):
                     interactive_conv = model.bert.embeddings.interactive_conv
@@ -166,8 +156,7 @@ def train_epoch(model, train_loader, optimizer, scheduler, device, model_type, e
                         print(f"  Interactive Conv Grad Mean: {interactive_conv.weight.grad.abs().mean().item():.4f}")
                         print(f"  Interactive Conv Grad Max: {interactive_conv.weight.grad.abs().max().item():.4f}")
                         print(f"  Interactive Conv Weight Shape: {interactive_conv.weight.shape}")
-            
-                        # 打印具体的权重和梯度样本
+        
                         flat_weight = interactive_conv.weight.view(-1)
                         flat_grad = interactive_conv.weight.grad.view(-1)
                         for i in range(min(4, flat_weight.numel())):
@@ -495,7 +484,6 @@ def main():
                 epoch_metrics["classifier_l2"] = l2
                 epoch_metrics["classifier_sparsity"] = spars
 
-            # Conv2D 1x1 Kernel (if applicable)
             if is_conv2d_model_main:
                 # Main 1x1 conv kernel
                 if hasattr(model, 'conv1x1') and hasattr(model.conv1x1, 'weight'):
@@ -515,7 +503,6 @@ def main():
                     l2, spars = calculate_metrics(interactive_conv.weight)
                     epoch_metrics["interactive_conv_l2"] = l2
                     epoch_metrics["interactive_conv_sparsity"] = spars
-                    # 添加额外的统计指标
                     with torch.no_grad():
                         weight = interactive_conv.weight
                         epoch_metrics["interactive_conv_weight_mean"] = weight.abs().mean().item()
