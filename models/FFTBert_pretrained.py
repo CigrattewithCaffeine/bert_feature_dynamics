@@ -71,7 +71,7 @@ class FFTBertEmbeddings(HFBertEmbeddings):
         #print("[DEBUG] L2 Normalization Applied to FFT Embeddings")
 
         # --- 3. 合并与后续处理 ---
-        final_embeddings = fused_embeddings
+        final_embeddings = fused_embeddings + self.token_type_embeddings(token_type_ids) 
         final_embeddings = self.LayerNorm(final_embeddings)
         final_embeddings = self.dropout(final_embeddings)
 
