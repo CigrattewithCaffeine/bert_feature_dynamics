@@ -19,7 +19,7 @@ class Conv2DEmbeddings(nn.Module):
             in_channels=2,     # two input channels: token and position embeddings
             out_channels=1,     # one output channel
             kernel_size=(3, 3), # Kernel size
-            padding=(0, 0),  
+            padding=(1, 1),  
             bias=False        
         )
         
