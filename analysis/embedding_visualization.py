@@ -117,7 +117,7 @@ def get_embeddings(model, tokenizer, sentences, max_len, device):
         print(f"Error concatenating embeddings, likely due to inconsistent shapes: {e}")
         return None, None
     
-def plot_tsne(embeddings_dict, output_dir, perplexity=30, n_iter=1000, random_state=42):
+def plot_tsne(embeddings_dict, output_dir, perplexity, n_iter, random_state):
     print("Generating combined t-SNE plot...")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -215,7 +215,7 @@ def plot_tsne(embeddings_dict, output_dir, perplexity=30, n_iter=1000, random_st
         traceback.print_exc() # Print detailed traceback for debugging
 
 
-def plot_similarity_heatmap(embeddings_dict, output_dir, sample_size=500):
+def plot_similarity_heatmap(embeddings_dict, output_dir, sample_size):
     """Calculates and plots cosine similarity heatmaps."""
     print("Generating similarity heatmaps...")
     if not os.path.exists(output_dir):
@@ -260,49 +260,92 @@ def plot_similarity_heatmap(embeddings_dict, output_dir, sample_size=500):
     print(f"Similarity heatmaps saved to {plot_path}")
 
 def plot_dimension_stats(embeddings_dict, output_dir):
+    """
+    Plots mean, standard deviation, min, and max values across all dimensions
+    for all models in a single plot.
+    """
     print("Generating per-dimension statistics plots...")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+        
+    # Define colors for each model
     model_colors = {
         "base": {"line": "#2B4F81", "fill": "#4682B4"},
         "fft": {"line": "#B22222", "fill": "#FF6F61"},
-        "conv": {"line": "#145A32", "fill": "#2E8B57"},
+        "conv2d": {"line": "#145A32", "fill": "#2E8B57"},  # Changed from "conv" to "conv2d" to match keys
     }
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    dimensions = np.arange(next(iter(embeddings_dict.values())).shape[1])
+    # Create a single figure with one axis for all models
+    fig, ax = plt.subplots(figsize=(16, 8))
+    
+    # Find the first non-empty embeddings to determine dimensions
+    first_valid_embeddings = None
+    for emb in embeddings_dict.values():
+        if emb is not None and emb.shape[0] > 0:
+            first_valid_embeddings = emb
+            break
+    
+    if first_valid_embeddings is None:
+        print("Error: No valid embeddings found.")
+        return
+    
+    dimensions = np.arange(first_valid_embeddings.shape[1])  # Get all dimensions
 
+    # Plot each model's statistics on the same axis
     for model_type, embeddings in embeddings_dict.items():
+        if embeddings is None or embeddings.shape[0] == 0:
+            print(f"Skipping {model_type} due to missing or empty embeddings.")
+            continue
+        
         print(f"Calculating dimension stats for {model_type}...")
-
+        
         try:
+            # Calculate statistics across all tokens for each dimension
             mean_vals = np.mean(embeddings, axis=0)
             std_vals = np.std(embeddings, axis=0)
-            min_vals = np.min(embeddings, axis=0)
-            max_vals = np.max(embeddings, axis=0)
-
+            
+            # Get colors for this model (fallback to black/gray if not specified)
             colors = model_colors.get(model_type, {"line": "black", "fill": "gray"})
-            ax.plot(dimensions, mean_vals, label=f'{model_type} Mean', color=colors["line"], linewidth=2)
-            ax.fill_between(dimensions, mean_vals - std_vals, mean_vals + std_vals,
-                            color=colors["fill"], alpha=0.25, label=f'{model_type} ±1 Std Dev', linewidth=0)
-
+            
+            # Plot mean line
+            ax.plot(dimensions, mean_vals, 
+                    label=f'{model_type} Mean', 
+                    color=colors["line"], 
+                    linewidth=1.5,
+                    alpha=0.9)
+            
+            # Plot standard deviation band
+            ax.fill_between(dimensions, 
+                           mean_vals - std_vals, 
+                           mean_vals + std_vals,
+                           color=colors["fill"], 
+                           alpha=0.2, 
+                           label=f'{model_type} ±1 Std Dev')
+            
+            print(f"Plotted statistics for {model_type} with {len(dimensions)} dimensions.")
+            
         except Exception as e:
             print(f"Error during dimension stats plotting for {model_type}: {e}")
-            ax.text(0.5, 0.5, f'Error plotting {model_type}:\n{e}',
-                    horizontalalignment='center', verticalalignment='center',
-                    transform=ax.transAxes)
+            import traceback
+            traceback.print_exc()
 
-    ax.set_title('Per-Dimension Embedding Statistics')
-    ax.set_xlabel("Embedding Dimension Index")
-    ax.set_ylabel("Value")
-    ax.grid(True, linestyle='--', alpha=0.5)
-    ax.legend(loc='upper right')
+    # Set plot title and labels
+    ax.set_title('Per-Dimension Embedding Statistics (All Models)', fontsize=14)
+    ax.set_xlabel("Embedding Dimension Index", fontsize=12)
+    ax.set_ylabel("Value", fontsize=12)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    
+    # Add legend with better positioning and formatting
+    ax.legend(loc='upper right', framealpha=0.9, fontsize=10)
+    
+    # Improve overall layout
     plt.tight_layout()
-
-    plot_path = os.path.join(output_dir, "dimension_stats_comparison.png")
-    plt.savefig(plot_path)
+    
+    # Save the plot
+    plot_path = os.path.join(output_dir, "dimension_stats_all_comparison.png")
+    plt.savefig(plot_path, dpi=300)
     plt.close(fig)
-    print(f"Dimension statistics plot saved to {plot_path}")
+    print(f"Full dimension statistics plot saved to {plot_path}")
 
 
 def calculate_entropy_hist(dimension_data, n_bins=50):
@@ -312,221 +355,301 @@ def calculate_entropy_hist(dimension_data, n_bins=50):
     # Use scipy's entropy which handles p=0 cases correctly
     return calculate_scipy_entropy(probabilities, base=2)
 
-# Replace the previous plot_dimension_stats function with this one
-def plot_dimension_stats(embeddings_dict, output_dir, n_dims_to_select=12, n_top_criteria=50, n_bins_entropy=50):
-    """
-    Selects dimensions based on variance and entropy intersection from the 'base' model,
-    then plots statistics for these dimensions across all models.
-    """
-    print("Selecting dimensions based on 'base' model variance and entropy...")
+
+def plot_dimension_violins(embeddings_dict, output_dir, n_dims_to_select=12, n_top_criteria=50, n_bins_entropy=50):
+    """为选定的维度绘制提琴图，每个维度显示三个模型的分布对比
+    选择标准：熵最高的前50个维度与方差最大的前50个维度的交集，然后按综合得分排序"""
+    print("为选定维度生成提琴图分布...")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # 确定要使用的模型类型
+    model_types = ['base', 'fft', 'conv2d']
+    models_present = []
+    
+    # 颜色设置
+    palette = {
+        "base": "#36648B",   # 蓝色
+        "fft": "#FF6F61",    # 珊瑚色
+        "conv2d": "#2E8B57"  # 海绿色
+    }
+    
+    # 从base模型选择维度
     base_embeddings = embeddings_dict.get('base')
     if base_embeddings is None or base_embeddings.shape[0] == 0:
-        print("Error: 'base' model embeddings not found or empty. Cannot select dimensions.")
+        print("错误：'base'模型嵌入为空，无法选择维度。")
         return
 
     hidden_size = base_embeddings.shape[1]
-    if hidden_size == 0:
-        print("Error: Embedding hidden size is 0.")
+    print(f"选择维度中，嵌入总维度大小：{hidden_size}")
+    
+    # 计算方差
+    print("计算各维度方差...")
+    base_variances = np.var(base_embeddings, axis=0)
+    
+    # 计算熵
+    print("计算各维度熵...")
+    base_entropies = np.array([calculate_entropy_hist(base_embeddings[:, d], n_bins=n_bins_entropy) 
+                              for d in tqdm(range(hidden_size), desc="计算熵")])
+    
+    # 获取方差和熵排名前n_top_criteria的维度索引
+    top_var_indices = set(np.argsort(base_variances)[-n_top_criteria:])
+    top_ent_indices = set(np.argsort(base_entropies)[-n_top_criteria:])
+
+    # 找到交集
+    intersection_indices = list(top_var_indices.intersection(top_ent_indices))
+    print(f"方差和熵高维度的交集大小: {len(intersection_indices)}")
+    
+    # 根据方差和熵的组合得分对交集维度排序
+    # 使用方差和熵的归一化值之和作为得分
+    if intersection_indices:
+        # 归一化方差和熵以便合理组合
+        norm_var = (base_variances - np.min(base_variances)) / (np.max(base_variances) - np.min(base_variances))
+        norm_ent = (base_entropies - np.min(base_entropies)) / (np.max(base_entropies) - np.min(base_entropies))
+        
+        # 计算交集维度的综合得分
+        combined_scores = [(i, norm_var[i] + norm_ent[i]) for i in intersection_indices]
+        # 按得分降序排序
+        combined_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # 选择得分最高的n_dims_to_select个维度
+        selected_indices = [idx for idx, _ in combined_scores[:n_dims_to_select]]
+        print(selected_indices)
+    else:
+        # 如果交集为空，则回退到按方差选择
+        print("警告：方差和熵的交集为空，回退到方差选择")
+        selected_indices = sorted(list(top_var_indices))[:n_dims_to_select]
+    
+    # 确保我们有所需的维度数量
+    final_n_dims = min(len(selected_indices), n_dims_to_select)
+    selected_indices = sorted(selected_indices[:final_n_dims])  # 按维度索引排序
+    
+    print(f"选择了以下{len(selected_indices)}个维度用于可视化: {selected_indices}")
+    
+    # 收集所有模型在所选维度上的数据
+    all_dimension_data = []
+    
+    for model_type in model_types:
+        embeddings = embeddings_dict.get(model_type)
+        if embeddings is None or embeddings.shape[0] == 0:
+            print(f"跳过{model_type}，因为嵌入为空。")
+            continue
+            
+        models_present.append(model_type)
+        
+        try:
+            # 为每个选定的维度添加数据
+            for dim_idx in selected_indices:
+                dim_values = embeddings[:, dim_idx]
+                for val in dim_values:
+                    all_dimension_data.append({
+                        'Value': val, 
+                        'Dimension': f"Dim {dim_idx}", 
+                        'ModelType': model_type
+                    })
+            print(f"已收集{model_type}模型的维度数据。")
+        except Exception as e:
+            print(f"收集{model_type}的维度数据时出错: {e}")
+    
+    if not all_dimension_data:
+        print("没有数据可绘制。")
         return
-
+    
+    # 创建DataFrame
+    df = pd.DataFrame(all_dimension_data)
+    
+    # 只保留出现的模型的调色板
+    plot_palette = {k: v for k, v in palette.items() if k in models_present}
+    
+    # 创建提琴图
+    plt.figure(figsize=(20, 10))
+    
     try:
-        # --- Dimension Selection based on 'base' model ---
-        print("Calculating variance and entropy for 'base' model dimensions...")
-        base_variances = np.var(base_embeddings, axis=0)
-        # Calculate entropy for each dimension using the histogram method
-        base_entropies = np.array([calculate_entropy_hist(base_embeddings[:, d], n_bins=n_bins_entropy) for d in tqdm(range(hidden_size), desc="Calculating entropy")])
-
-        # Get top N indices for each criterion
-        top_var_indices = set(np.argsort(base_variances)[-n_top_criteria:])
-        top_ent_indices = set(np.argsort(base_entropies)[-n_top_criteria:])
-
-        # Find intersection
-        intersection_indices = sorted(list(top_var_indices.intersection(top_ent_indices)))
-
-        # Select up to n_dims_to_select from intersection, fallback to top variance if intersection is too small
-        if len(intersection_indices) >= n_dims_to_select:
-            selected_indices = intersection_indices[:n_dims_to_select]
-            print(f"Selected {len(selected_indices)} dimensions from Var∩Ent intersection: {selected_indices}")
-        else:
-            print(f"Var∩Ent intersection too small ({len(intersection_indices)}). Falling back to top {n_dims_to_select} variance dimensions.")
-            # Fallback to top variance dimensions if intersection is empty or too small
-            selected_indices = sorted(list(top_var_indices))[-n_dims_to_select:]
-            if not selected_indices: # Handle case where even variance is zero
-                 selected_indices = list(range(min(n_dims_to_select, hidden_size)))
-                 print(f"Warning: Could not select meaningful dimensions, using first {len(selected_indices)} dims.")
-            print(f"Selected {len(selected_indices)} dimensions based on top variance: {selected_indices}")
-
-        if not selected_indices:
-             print("Error: No dimensions were selected.")
-             return
-        # --- End Dimension Selection ---
-
-        num_models = len(embeddings_dict)
-        fig, axes = plt.subplots(num_models, 1, figsize=(12, 4 * num_models), sharex=True)
-        if num_models == 1:
-            axes = [axes]
-
-        model_types = list(embeddings_dict.keys())
-        num_selected = len(selected_indices)
-        x_ticks = np.arange(num_selected) # Use 0, 1, 2... for plotting position
-
-        print("Calculating and plotting stats for selected dimensions...")
-        for i, model_type in enumerate(model_types):
-            embeddings = embeddings_dict.get(model_type)
-            ax = axes[i]
-
-            if embeddings is None or embeddings.shape[0] == 0:
-                print(f"Skipping dimension stats for {model_type} due to missing embeddings.")
-                ax.set_title(f'Selected Dimension Stats ({model_type}) - No Data')
-                ax.text(0.5, 0.5, 'No Embedding Data', ha='center', va='center', transform=ax.transAxes)
-                continue
-
-            try:
-                # Filter data for selected dimensions BEFORE calculating stats
-                selected_embeddings = embeddings[:, selected_indices]
-
-                mean_vals = np.mean(selected_embeddings, axis=0)
-                std_vals = np.std(selected_embeddings, axis=0)
-                min_vals = np.min(selected_embeddings, axis=0)
-                max_vals = np.max(selected_embeddings, axis=0)
-
-                ax.plot(x_ticks, mean_vals, label='Mean', color='blue', zorder=3)
-                ax.fill_between(x_ticks, mean_vals - std_vals, mean_vals + std_vals, color='blue', alpha=0.2, label='Mean ± 1 Std Dev', zorder=2)
-                ax.plot(x_ticks, min_vals, label='Min', color='gray', linestyle='--', alpha=0.7, zorder=1)
-                ax.plot(x_ticks, max_vals, label='Max', color='gray', linestyle='--', alpha=0.7, zorder=1)
-
-                ax.set_title(f'Selected Dimension Embedding Statistics ({model_type})')
-                ax.set_ylabel("Value")
-                ax.legend(loc='best') # Adjust legend location dynamically
-                ax.grid(True, linestyle='--', alpha=0.5)
-                # Set x-axis ticks and labels correctly
-                ax.set_xticks(x_ticks)
-                ax.set_xticklabels(selected_indices, rotation=45, ha='right', fontsize=8)
-
-
-                print(f"Dimension stats plotted for {model_type}.")
-
-            except Exception as e:
-                 print(f"Error during dimension stats plotting for {model_type}: {e}")
-                 ax.set_title(f'Selected Dimension Stats ({model_type}) - Error')
-                 ax.text(0.5, 0.5, f'Stats Plot Error:\n{e}', ha='center', va='center', transform=ax.transAxes)
-
-        axes[-1].set_xlabel("Selected Embedding Dimension Index")
-        fig.suptitle("Statistics for Selected Embedding Dimensions (Based on 'base' Var∩Ent)", fontsize=14)
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97]) # Adjust layout to prevent title overlap
-        plot_path = os.path.join(output_dir, "selected_dimension_stats_comparison.png")
-        plt.savefig(plot_path)
-        plt.close(fig)
-        print(f"Selected dimension statistics plots saved to {plot_path}")
-
+        print("生成提琴图...")
+        # 使用catplot创建分面网格图
+        g = sns.catplot(
+            data=df,
+            x='Dimension', 
+            y='Value',
+            hue='ModelType',
+            kind='violin',
+            palette=plot_palette,
+            hue_order=models_present,
+            split=False,        # 不拆分提琴图
+            inner='quartile',   # 显示四分位数
+            scale='width',      # 所有提琴图宽度相同
+            linewidth=1,        # 轮廓线宽度
+            height=8,           # 图形高度
+            aspect=2,           # 宽高比
+            legend_out=False,   # 将图例放在图中
+            dodge=True,         # 并排显示不同模型的提琴图
+            bw=0.2              # 带宽控制（影响平滑度）
+        )
+        
+        # 配置图形
+        g.set_xticklabels(rotation=45)
+        g.fig.suptitle('所选维度的嵌入分布对比（基于方差与熵）', fontsize=16, y=1.02)
+        g.set_axis_labels("嵌入维度", "值")
+        
+        # 移除顶部科学计数法显示并添加网格
+        for ax in g.axes.flat:
+            ax.ticklabel_format(style='plain', axis='y')
+            ax.grid(True, linestyle='--', alpha=0.5)
+            
+        plt.tight_layout()
+        
+        # 保存图形
+        plot_path = os.path.join(output_dir, "dimension_violin_comparison.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"维度提琴图保存至 {plot_path}")
+        
     except Exception as e:
-        print(f"An error occurred during dimension selection or plotting setup: {e}")
+        print(f"绘制提琴图时出错: {e}")
         import traceback
         traceback.print_exc()
 
 
-# --- End plot_dimension_stats ---
-
-def plot_norm_distribution(embeddings_dict, output_dir):
-    """Plots the distribution of L2 norms using combined violin and KDE plots."""
-    print("Generating combined L2 norm distribution plots...")
+def plot_kde_distributions(embeddings_dict, output_dir, n_dims_to_select=12, n_top_criteria=50, n_bins_entropy=50):
+    """绘制维度值的KDE分布图"""
+    print("生成组合KDE分布图...")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    all_norms_data = []
+    # 确定要使用的模型类型
     model_types = ['base', 'fft', 'conv2d']
     models_present = []
-
-    print("Calculating L2 norms...")
-    for model_type in model_types:
-        embeddings = embeddings_dict.get(model_type) 
-        if embeddings is None or embeddings.shape[0] == 0:
-             print(f"Skipping norm calculation for {model_type} due to missing/empty embeddings.")
-             continue
-        models_present.append(model_type)
-        try:
-            norms = np.linalg.norm(embeddings, axis=1)
-            for norm in norms:
-                all_norms_data.append({'Norm': norm, 'ModelType': model_type})
-            print(f"Calculated {len(norms)} norms for {model_type}.")
-        except Exception as e:
-            print(f"Error calculating norms for {model_type}: {e}")
-
-    if not all_norms_data:
-        print("No norm data to plot.")
-        return
-
-    df = pd.DataFrame(all_norms_data)
+    
+    # 颜色设置
     palette = {
-        "base": "#36648B",   # A slightly different blue
-        "fft": "#FF6F61",    # Coral
-        "conv2d": "#2E8B57"   # Sea Green
+        "base": "#36648B",   # 蓝色
+        "fft": "#FF6F61",    # 珊瑚色
+        "conv2d": "#2E8B57"  # 海绿色
     }
     
-    plot_palette = {k: v for k, v in palette.items() if k in models_present}
+    # 从base模型选择维度
+    base_embeddings = embeddings_dict.get('base')
+    if base_embeddings is None or base_embeddings.shape[0] == 0:
+        print("错误：'base'模型嵌入为空，无法选择维度。")
+        return
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6)) 
+    hidden_size = base_embeddings.shape[1]
+    print(f"选择维度中，嵌入总维度大小：{hidden_size}")
+    
+    # 计算方差
+    print("计算各维度方差...")
+    base_variances = np.var(base_embeddings, axis=0)
+    
+    # 计算熵
+    print("计算各维度熵...")
+    base_entropies = np.array([calculate_entropy_hist(base_embeddings[:, d], n_bins=n_bins_entropy) 
+                              for d in tqdm(range(hidden_size), desc="计算熵")])
+    
+    # 获取方差和熵排名前n_top_criteria的维度索引
+    top_var_indices = set(np.argsort(base_variances)[-n_top_criteria:])
+    top_ent_indices = set(np.argsort(base_entropies)[-n_top_criteria:])
 
-    # --- Combined Violin Plot ---
+    # 找到交集
+    intersection_indices = list(top_var_indices.intersection(top_ent_indices))
+    print(f"方差和熵高维度的交集大小: {len(intersection_indices)}")
+    
+    # 根据方差和熵的组合得分对交集维度排序
+    # 使用方差和熵的归一化值之和作为得分
+    if intersection_indices:
+        # 归一化方差和熵以便合理组合
+        norm_var = (base_variances - np.min(base_variances)) / (np.max(base_variances) - np.min(base_variances))
+        norm_ent = (base_entropies - np.min(base_entropies)) / (np.max(base_entropies) - np.min(base_entropies))
+        
+        # 计算交集维度的综合得分
+        combined_scores = [(i, norm_var[i] + norm_ent[i]) for i in intersection_indices]
+        # 按得分降序排序
+        combined_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # 选择得分最高的n_dims_to_select个维度
+        selected_indices = [idx for idx, _ in combined_scores[:n_dims_to_select]]
+        print(selected_indices)
+    else:
+        # 如果交集为空，则回退到按方差选择
+        print("警告：方差和熵的交集为空，回退到方差选择")
+        selected_indices = sorted(list(top_var_indices))[:n_dims_to_select]
+    
+    # 确保我们有所需的维度数量
+    final_n_dims = min(len(selected_indices), n_dims_to_select)
+    selected_indices = sorted(selected_indices[:final_n_dims])  # 按维度索引排序
+    
+    print(f"选择了以下{len(selected_indices)}个维度用于可视化: {selected_indices}")
+    all_dimension_data = []
+    
+    for model_type in model_types:
+        embeddings = embeddings_dict.get(model_type)
+        if embeddings is None or embeddings.shape[0] == 0:
+            print(f"跳过{model_type}，因为嵌入为空。")
+            continue
+            
+        models_present.append(model_type)
+        
+        try:
+            for dim_idx in selected_indices:
+                dim_values = embeddings[:, dim_idx]
+                for val in dim_values:
+                    all_dimension_data.append({
+                        'Value': val, 
+                        'Dimension': f"Dim {dim_idx}", 
+                        'ModelType': model_type
+                    })
+            print(f"已收集{model_type}模型的维度数据。")
+        except Exception as e:
+            print(f"收集{model_type}的维度数据时出错: {e}")
+    
+    if not all_dimension_data:
+        print("没有数据可绘制。")
+        return
+    df = pd.DataFrame(all_dimension_data)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
     try:
-        print("Generating combined violin plot...")
-        sns.violinplot(x='ModelType', y='Norm', data=df, ax=axes[0],
-                       hue='ModelType', # Use hue to map colors
-                       palette=plot_palette,
-                       order=models_present, 
-                       hue_order=models_present,
-                       bw_adjust=0.5, 
-                       inner='quartile', 
-                       cut=0,
-                       legend=False 
-                       )
-        # Attempt to make inner lines match palette - more complex
-        # for k, violin in enumerate(axes[0].collections):
-        #     if k < len(models_present): # Only color the main violin bodies
-        #         violin.set_alpha(0.7) # General alpha for fill (might not work directly)
-
-        axes[0].set_title('Distribution of Embedding L2 Norms (Violin)')
-        axes[0].set_xlabel("Model Type")
-        axes[0].set_ylabel("L2 Norm")
-        axes[0].grid(True, linestyle='--', alpha=0.5)
-
+        # 为每个模型创建新的DataFrame，添加L2范数
+        kde_data = []
+        
+        for model_type in models_present:
+            embeddings = embeddings_dict.get(model_type)
+            if embeddings is not None and embeddings.shape[0] > 0:
+                # 计算每个embedding的L2范数
+                norms = np.linalg.norm(embeddings, axis=1)
+                for norm in norms:
+                    kde_data.append({
+                        'Norm': norm,
+                        'ModelType': model_type
+                    })
+        
+        if kde_data:
+            kde_df = pd.DataFrame(kde_data)
+            
+            # 绘制KDE图
+            sns.kdeplot(data=kde_df, x='Norm', hue='ModelType', 
+                        hue_order=models_present,
+                        palette=plot_palette,
+                        fill=True,
+                        alpha=0.35,        
+                        common_norm=False,  
+                        warn_singular=False)
+                        
+            ax.set_title('嵌入L2范数的分布(KDE)')
+            ax.set_xlabel("L2范数")
+            ax.set_ylabel("密度")
+            ax.grid(True, linestyle='--', alpha=0.5)
+            
+            plt.tight_layout()
+            plot_path = os.path.join(output_dir, "norm_distribution_kde.png")
+            plt.savefig(plot_path, dpi=300)
+            plt.close(fig)
+            print(f"L2范数KDE分布图保存至 {plot_path}")
+    
     except Exception as e:
-        print(f"Error plotting combined violin plot: {e}")
-        axes[0].set_title('Violin Plot - Error')
-        axes[0].text(0.5, 0.5, f'Violin Plot Error:\n{e}', ha='center', va='center', transform=axes[0].transAxes)
+        print(f"绘制KDE图时出错: {e}")
+        import traceback
+        traceback.print_exc()
 
-
-    # --- Combined KDE Plot ---
-    try:
-        print("Generating combined KDE plot...")
-        sns.kdeplot(data=df, x='Norm', hue='ModelType', ax=axes[1],
-                    hue_order=models_present,
-                    palette=plot_palette,
-                    fill=True,
-                    alpha=0.35,        
-                    common_norm=False,  
-                    warn_singular=False
-                    )
-        axes[1].set_title('Distribution of Embedding L2 Norms (KDE)')
-        axes[1].set_xlabel("L2 Norm")
-        axes[1].set_ylabel("Density")
-        axes[1].grid(True, linestyle='--', alpha=0.5)
-
-    except Exception as e:
-        print(f"Error plotting combined KDE plot: {e}")
-        axes[1].set_title('KDE Plot - Error')
-        axes[1].text(0.5, 0.5, f'KDE Plot Error:\n{e}', ha='center', va='center', transform=axes[1].transAxes)
-
-
-    fig.suptitle("Comparison of Embedding L2 Norm Distributions", fontsize=16)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
-    plot_path = os.path.join(output_dir, "norm_distribution_comparison_combined.png") 
-    plt.savefig(plot_path)
-    plt.close(fig)
-    print(f"Combined L2 norm distribution plots saved to {plot_path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize and compare BERT embedding layer outputs.")
@@ -565,13 +688,13 @@ def main():
         print(f"Error loading tokenizer or config: {e}")
         sys.exit(1)
     try:
-        sst2_splits = load_sst2(args.data_dir)
+        sst2_splits = load_sst2()
         train_df = sst2_splits['train']
         if len(train_df) < args.num_samples:
             print(f"Warning: Requested {args.num_samples} samples, but training set only has {len(train_df)}. Using all training samples.")
             args.num_samples = len(train_df)
         sampled_df = train_df.sample(n=args.num_samples, random_state=args.seed)
-        sentences = sampled_df['sentence'].tolist() 
+        sentences = sampled_df['text'].tolist() 
         print(f"Sampled {len(sentences)} sentences.")
     except Exception as e:
         print(f"Error loading or sampling data: {e}")
@@ -591,7 +714,7 @@ def main():
         embeddings_dict[model_type] = embeddings
         tokens_dict[model_type] = tokens 
 
-    plot_tsne(embeddings_dict, tokens_dict, args.output_dir,
+    plot_tsne(embeddings_dict, args.output_dir,
               perplexity=args.tsne_perplexity, n_iter=args.tsne_iterations, random_state=args.seed)
     plot_similarity_heatmap(embeddings_dict, args.output_dir, sample_size=args.heatmap_sample_size)
     plot_dimension_stats(embeddings_dict, args.output_dir)
