@@ -253,6 +253,7 @@ def plot_similarity_heatmap(embeddings_dict, output_dir, sample_size):
             print(f"Error during heatmap generation for {model_type}: {e}")
             ax.set_title(f'Similarity Heatmap ({model_type}) - Error')
             ax.text(0.5, 0.5, f'Heatmap Error:\n{e}', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.tight_layout()
     plot_path = os.path.join(output_dir, "similarity_heatmap_comparison.png")
     plt.savefig(plot_path)
@@ -488,8 +489,8 @@ def plot_dimension_violins(embeddings_dict, output_dir, n_dims_to_select=12, n_t
         
         # 配置图形
         g.set_xticklabels(rotation=45)
-        g.fig.suptitle('所选维度的嵌入分布对比（基于方差与熵）', fontsize=16, y=1.02)
-        g.set_axis_labels("嵌入维度", "值")
+        g.fig.suptitle('Embedding Value of Chosen Dimensions', fontsize=16, y=1.02)
+        g.set_axis_labels("Embeddings", "Value")
         
         # 移除顶部科学计数法显示并添加网格
         for ax in g.axes.flat:
@@ -628,15 +629,15 @@ def plot_kde_distributions(embeddings_dict, output_dir, n_dims_to_select=12, n_t
             # 绘制KDE图
             sns.kdeplot(data=kde_df, x='Norm', hue='ModelType', 
                         hue_order=models_present,
-                        palette=plot_palette,
+                        palette=palette,
                         fill=True,
                         alpha=0.35,        
                         common_norm=False,  
                         warn_singular=False)
                         
-            ax.set_title('嵌入L2范数的分布(KDE)')
-            ax.set_xlabel("L2范数")
-            ax.set_ylabel("密度")
+            ax.set_title('Density Distribution of Embeddings L2 Norm')
+            ax.set_xlabel("L2 Norm")
+            ax.set_ylabel("Density")
             ax.grid(True, linestyle='--', alpha=0.5)
             
             plt.tight_layout()
@@ -718,7 +719,8 @@ def main():
               perplexity=args.tsne_perplexity, n_iter=args.tsne_iterations, random_state=args.seed)
     plot_similarity_heatmap(embeddings_dict, args.output_dir, sample_size=args.heatmap_sample_size)
     plot_dimension_stats(embeddings_dict, args.output_dir)
-    plot_norm_distribution(embeddings_dict, args.output_dir)
+    plot_dimension_violins(embeddings_dict, args.output_dir)
+    plot_kde_distributions(embeddings_dict, args.output_dir)
     print("\nEmbedding visualization script finished.")
 
 if __name__ == "__main__":
