@@ -1,5 +1,6 @@
 import os
 import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import argparse
 import random
 import torch
@@ -529,9 +530,9 @@ def plot_norm_distribution(embeddings_dict, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize and compare BERT embedding layer outputs.")
-    parser.add_argument("--base_model_checkpoint", type=str, required=True, help="Path to the saved checkpoint for the 'base' model.")
-    parser.add_argument("--conv_model_checkpoint", type=str, required=True, help="Path to the saved checkpoint for the 'conv2d' model.")
-    parser.add_argument("--fft_model_checkpoint", type=str, required=True, help="Path to the saved checkpoint for the 'fft' model.")
+    parser.add_argument("--base_model_checkpoint", type=str, required=False, help="Path to the saved checkpoint for the 'base' model.")
+    parser.add_argument("--conv_model_checkpoint", type=str, required=False, help="Path to the saved checkpoint for the 'conv2d' model.")
+    parser.add_argument("--fft_model_checkpoint", type=str, required=False, help="Path to the saved checkpoint for the 'fft' model.")
     parser.add_argument("--data_dir", type=str, default="../data/sst2", help="Directory containing the SST-2 dataset (specifically train.tsv).")
     parser.add_argument("--num_samples", type=int, default=50, help="Number of sentences to sample from the training set.")
     parser.add_argument("--max_seq_length", type=int, default=128, help="Maximum sequence length for tokenizer.")
