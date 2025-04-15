@@ -18,7 +18,7 @@ class Conv2DEmbeddings(nn.Module):
         self.interactive_conv = nn.Conv2d(
             in_channels=2,     # two input channels: token and position embeddings
             out_channels=1,     # one output channel
-            kernel_size=(1, 1), # Kernel size
+            kernel_size=(3, 3), # Kernel size
             padding=(0, 0),  
             bias=False        
         )
