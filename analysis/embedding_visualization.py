@@ -247,7 +247,7 @@ def plot_similarity_heatmap(embeddings_dict, output_dir, sample_size):
             similarity_matrix = cosine_similarity(embeddings_sample)
 
             sns.heatmap(similarity_matrix, ax=ax, cmap='RdBu_r', cbar=True, square=True, xticklabels=False, yticklabels=False)
-            ax.set_title(f'Cosine Similarity Heatmap ({model_type})\n(Sampled {embeddings_sample.shape[0]} tokens)')
+            ax.set_title(f'Cosine Similarity Heatmap ({model_type})')
             print(f"Heatmap generated for {model_type}.")
         except Exception as e:
             print(f"Error during heatmap generation for {model_type}: {e}")
