@@ -4,11 +4,165 @@ import argparse
 import numpy as np
 import pandas as pd
 import json
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator, FormatStrFormatter
-import matplotlib.gridspec as gridspec
+import random 
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from tqdm import tqdm
 import glob
 import re
+import torch
+import textstat  
+
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+try:
+    from utils.data_utils import load_sst2
+    from models.BaseBert import BaseBertBaseForSequenceClassification
+    from models.ConvBert import Conv2DBertBaseForSequenceClassification
+    from models.FFTBert import FFTBertBaseForSequenceClassification
+    from transformers import BertTokenizer, BertConfig
+except ImportError as e:
+    print(f"Error importing modules: {e}")
+    sys.exit(1)
+
+def set_seed(seed=42):
+    """Sets random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def run_probe(X, y, probe_type='classification', random_state=42, n_splits=5):
+    """
+    Trains and evaluates a probe using cross-validation.
+    """
+    if X is None or y is None or X.shape[0] != y.shape[0] or X.shape[0] < n_splits:
+        return {"error": "Invalid input data"}
+
+    cv = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    scores = {}
+
+    if probe_type == 'classification':
+        if len(np.unique(y)) < 2: 
+            return {"accuracy": 0.0, "warning": "Not enough classes"}
+        probe = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(solver='lbfgs', max_iter=1000, random_state=random_state, 
+                               C=0.1, class_weight='balanced')
+        )
+        cv_scores = cross_val_score(probe, X, y, cv=cv, scoring='accuracy', n_jobs=-1)
+        scores['accuracy'] = np.mean(cv_scores)
+
+    elif probe_type == 'regression':
+        probe = make_pipeline(StandardScaler(), LinearRegression())
+        r2_scores = cross_val_score(probe, X, y, cv=cv, scoring='r2', n_jobs=-1)
+        neg_mse_scores = cross_val_score(probe, X, y, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
+        scores['r2'] = np.mean(r2_scores)
+        scores['neg_mse'] = np.mean(neg_mse_scores)
+    else:
+        raise ValueError("probe_type must be 'classification' or 'regression'")
+
+    return scores
+
+def get_model_instance_probe(model_type, config, checkpoint_path=None, device='cpu'):
+    """Instantiates a model, loads checkpoint ONLY IF provided."""
+    model_map = {
+        'base': BaseBertBaseForSequenceClassification,
+        'conv2d': Conv2DBertBaseForSequenceClassification,
+        'fft': FFTBertBaseForSequenceClassification
+    }
+    
+    if model_type not in model_map:
+        raise ValueError(f"Unsupported model_type for probing: {model_type}")
+    
+    print(f"Instantiating {model_type} model (for probe feature extraction)...")
+    model = model_map[model_type](config)
+
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"Loading checkpoint: {os.path.basename(checkpoint_path)}")
+        try:
+            state_dict = torch.load(checkpoint_path, map_location='cpu')
+            if list(state_dict.keys())[0].startswith('module.'):
+                state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict, strict=False)
+        except Exception as e:
+            print(f"    Warning: Error loading checkpoint for {model_type}: {e}. Using initialized weights.")
+    elif checkpoint_path:
+        print(f"    Warning: Checkpoint path not found: {checkpoint_path}. Using initialized weights.")
+    else:
+        print(f"    No checkpoint provided. Using initialized weights (Random Initial State).")
+
+    model.to(device)
+    model.eval()
+    return model
+
+def extract_cls_hidden_states(model, dataloader, layer_index, device):
+    """Extracts [CLS] hidden states for a specific layer from a dataloader."""
+    cls_states = []
+    print(f"Extracting [CLS] states for layer {layer_index}...")
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc=f"Layer {layer_index} Extraction", leave=False):
+            inputs = {k: v.to(device) for k, v in batch.items() if k != 'labels'}
+            try:
+                outputs = model(**inputs, output_hidden_states=True, output_attentions=False)
+                hidden_states = outputs.hidden_states
+                
+                if hidden_states and len(hidden_states) > layer_index:
+                    cls_output = hidden_states[layer_index][:, 0, :].detach().cpu().numpy()
+                    cls_states.append(cls_output)
+                else:
+                    print(f"Warning: Layer {layer_index} hidden state not found in outputs.")
+                    return None
+            except Exception as e:
+                print(f"Error during hidden state extraction: {e}")
+                return None
+
+    return np.concatenate(cls_states, axis=0) if cls_states else None
+
+def find_feature_files(feature_dir, layers_to_probe, epochs_to_probe):
+    """Finds feature and label files matching the specified layers and epochs."""
+    found_files = {}  # Structure: {epoch: {'labels': path, 'layers': {layer: path}}}
+    print(f"Searching for features in: {feature_dir}")
+    
+    # Find label files
+    label_files = glob.glob(os.path.join(feature_dir, "labels_epoch*.npy"))
+    epoch_label_map = {}
+    
+    for f_path in label_files:
+        match = re.search(r'labels_epoch(\d+)\.npy', os.path.basename(f_path))
+        if match:
+            epoch = int(match.group(1))
+            if epochs_to_probe is None or epoch in epochs_to_probe:
+                epoch_label_map[epoch] = f_path
+                found_files[epoch] = {'labels': f_path, 'layers': {}}
+    
+    if not epoch_label_map:
+        return {}
+    
+    # Find layer files for each epoch
+    layer_files = glob.glob(os.path.join(feature_dir, "layer*_epoch*.npy"))
+    for f_path in layer_files:
+        match = re.search(r'layer(\d+)_epoch(\d+)\.npy', os.path.basename(f_path))
+        if match:
+            layer = int(match.group(1))
+            epoch = int(match.group(2))
+            if epoch in epoch_label_map and (layers_to_probe is None or layer in layers_to_probe):
+                found_files[epoch]['layers'][layer] = f_path
+    
+    # Validate files
+    valid_epochs = list(found_files.keys())
+    for epoch in valid_epochs:
+        if not found_files[epoch]['labels'] or not found_files[epoch]['layers']:
+            print(f"Warning: Missing label or layer files for epoch {epoch} in {feature_dir}. Skipping.")
+            del found_files[epoch]
+    
+    print(f"Found data for epochs: {sorted(list(found_files.keys()))} in {feature_dir}")
+    return found_files
 
 def parse_range_or_list(arg_str):
     """Parses a string like '0,1,5' or '0-5,10,12' into a set of integers."""
@@ -34,362 +188,233 @@ def parse_range_or_list(arg_str):
             except ValueError:
                 print(f"Warning: Could not parse integer '{part}'. Skipping.")
     
-    return sorted(list(indices)) if indices else None
+    return indices if indices else None
 
-def find_nearest_epoch(target_epoch, available_epochs):
-    """Find the nearest available epoch to the target epoch."""
-    if not available_epochs:
-        return None
-    return min(available_epochs, key=lambda x: abs(x - target_epoch))
-
-def plot_model_probing_accuracy(results, model_run, epochs, output_dir, colors, label_map=None):
-    """Plot probing accuracy for a specific model run and list of epochs."""
-    if model_run not in results:
-        print(f"Model run '{model_run}' not found in results")
-        return None
+class TextDataset(torch.utils.data.Dataset):
+    def __init__(self, texts, tokenizer, max_len):
+        self.texts = texts
+        self.tokenizer = tokenizer
+        self.max_len = max_len
     
-    model_results = results[model_run]
+    def __len__(self):
+        return len(self.texts)
     
-    # Extract model type from the model_run name
-    model_type = None
-    if "base" in model_run.lower():
-        model_type = "base"
-    elif "conv" in model_run.lower():
-        model_type = "conv"
-    elif "fft" in model_run.lower():
-        model_type = "fft"
-    else:
-        print(f"Could not determine model type from '{model_run}'")
-        return None
-    
-    # Create figures dictionary to store one figure per epoch
-    figures = {}
-    
-    for epoch in epochs:
-        epoch_str = f"epoch_{epoch}"
-        if epoch_str not in model_results:
-            print(f"Epoch {epoch} not found for model {model_run}")
-            continue
-        
-        # Create figure for this epoch
-        fig, ax = plt.subplots(figsize=(9, 6))
-        
-        # Get baseline TF-IDF accuracy
-        tfidf_accuracy = model_results.get('baseline_tfidf', {}).get('sentiment_probe', {}).get('accuracy', 0)
-        
-        # Find all layers for this epoch
-        layers = []
-        layer_initial_accuracies = []
-        layer_trained_accuracies = []
-        
-        for key in model_results[epoch_str].keys():
-            if key.startswith('layer_'):
-                layer = int(key.split('_')[1])
-                layers.append(layer)
-                
-                # Get initial state accuracy
-                initial_acc = model_results[epoch_str][key].get('baseline_initial_state', {}).get('sentiment_probe', {}).get('accuracy', np.nan)
-                layer_initial_accuracies.append(initial_acc)
-                
-                # Get trained state accuracy
-                trained_acc = model_results[epoch_str][key].get('main_trained_state', {}).get('sentiment_probe', {}).get('accuracy', np.nan)
-                layer_trained_accuracies.append(trained_acc)
-        
-        if not layers:
-            print(f"No layer data found for {model_run} at epoch {epoch}")
-            continue
-        
-        # Sort by layer number
-        sorted_indices = np.argsort(layers)
-        layers = np.array(layers)[sorted_indices]
-        layer_initial_accuracies = np.array(layer_initial_accuracies)[sorted_indices]
-        layer_trained_accuracies = np.array(layer_trained_accuracies)[sorted_indices]
-        
-        # Plot data
-        line_width = 2.5
-        marker_size = 8
-        
-        # Plot TFIDF accuracy (horizontal line)
-        ax.axhline(y=tfidf_accuracy, color='gray', linestyle='-.', linewidth=line_width, alpha=0.7, label='TF-IDF Baseline')
-        
-        # Plot initial state accuracy
-        ax.plot(layers, layer_initial_accuracies, color=colors[model_type]['light'], 
-                linestyle='--', linewidth=line_width, marker='o', markersize=marker_size, 
-                label='Initial State')
-        
-        # Plot trained state accuracy
-        ax.plot(layers, layer_trained_accuracies, color=colors[model_type]['base'], 
-                linestyle='-', linewidth=line_width, marker='s', markersize=marker_size, 
-                label='Trained State')
-        
-        # Set plot properties
-        ax.set_xlabel('Layer', fontsize=14)
-        ax.set_ylabel('Probing Accuracy', fontsize=14)
-        model_name = label_map.get(model_type, model_type.capitalize()) if label_map else model_type.capitalize()
-        ax.set_title(f'{model_name} Model - Epoch {epoch}', fontsize=16)
-        
-        # Set x-axis to show integer ticks only
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        
-        # Format y-axis to avoid scientific notation
-        ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-        
-        # Set y-axis limits to accommodate all models similarly
-        ax.set_ylim(0.45, 0.85)
-        
-        # Add legend and grid
-        ax.legend(fontsize=12)
-        ax.grid(True, linestyle='--', alpha=0.3)
-        
-        # Make plot tight
-        plt.tight_layout()
-        
-        # Save the figure
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        fig_path = os.path.join(output_dir, f"{model_run}_epoch_{epoch}_probing.png")
-        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-        print(f"Saved figure to {fig_path}")
-        
-        # Store figure for later reference
-        figures[epoch] = {'fig': fig, 'ax': ax, 'path': fig_path}
-    
-    return figures
-
-def create_stage_visualization(results, model_runs, stage_epochs, output_dir, colors, label_map=None):
-    """Create a 5x3 grid visualization for the different stages and models."""
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Setup the figure and grid
-    fig = plt.figure(figsize=(18, 25))
-    gs = gridspec.GridSpec(5, 3, figure=fig, wspace=0.25, hspace=0.4)
-    
-    # Stage titles
-    stage_titles = [
-        "Stage 0: Unstructured",
-        "Stage 1: Emerging Structure",
-        "Stage 2: Maximum Separation",
-        "Stage 3: Morphological Changes",
-        "Stage 4: Late Homogenization"
-    ]
-    
-    # Column titles (model types)
-    column_titles = ["Base Model", "Conv2D Model", "FFT Model"]
-    
-    # Process each stage and model
-    for stage_idx, stage_title in enumerate(stage_titles):
-        for model_idx, model_run in enumerate(model_runs):
-            # Extract model type
-            model_type = None
-            if "base" in model_run.lower():
-                model_type = "base"
-            elif "conv" in model_run.lower():
-                model_type = "conv"
-            elif "fft" in model_run.lower():
-                model_type = "fft"
-            else:
-                print(f"Could not determine model type from '{model_run}'")
-                continue
-            
-            # Get the target epoch for this stage and model
-            target_epoch = stage_epochs[stage_idx][model_idx]
-            
-            # Check if we have data for this epoch
-            epoch_str = f"epoch_{target_epoch}"
-            if model_run not in results or epoch_str not in results[model_run]:
-                print(f"No data for {model_run} at epoch {target_epoch}")
-                
-                # Try to find nearest available epoch
-                available_epochs = []
-                if model_run in results:
-                    for key in results[model_run].keys():
-                        if key.startswith('epoch_'):
-                            try:
-                                available_epochs.append(int(key.split('_')[1]))
-                            except ValueError:
-                                continue
-                
-                if available_epochs:
-                    nearest_epoch = find_nearest_epoch(target_epoch, available_epochs)
-                    print(f"Using nearest available epoch {nearest_epoch} instead")
-                    epoch_str = f"epoch_{nearest_epoch}"
-                    target_epoch = nearest_epoch
-                else:
-                    print(f"No epochs available for {model_run}")
-                    continue
-            
-            # Create subplot
-            ax = fig.add_subplot(gs[stage_idx, model_idx])
-            
-            # Get baseline TF-IDF accuracy
-            tfidf_accuracy = results[model_run].get('baseline_tfidf', {}).get('sentiment_probe', {}).get('accuracy', 0)
-            
-            # Find all layers for this epoch
-            layers = []
-            layer_initial_accuracies = []
-            layer_trained_accuracies = []
-            
-            for key in results[model_run][epoch_str].keys():
-                if key.startswith('layer_'):
-                    layer = int(key.split('_')[1])
-                    layers.append(layer)
-                    
-                    # Get initial state accuracy
-                    initial_acc = results[model_run][epoch_str][key].get('baseline_initial_state', {}).get('sentiment_probe', {}).get('accuracy', np.nan)
-                    layer_initial_accuracies.append(initial_acc)
-                    
-                    # Get trained state accuracy
-                    trained_acc = results[model_run][epoch_str][key].get('main_trained_state', {}).get('sentiment_probe', {}).get('accuracy', np.nan)
-                    layer_trained_accuracies.append(trained_acc)
-            
-            if not layers:
-                print(f"No layer data found for {model_run} at epoch {target_epoch}")
-                continue
-            
-            # Sort by layer number
-            sorted_indices = np.argsort(layers)
-            layers = np.array(layers)[sorted_indices]
-            layer_initial_accuracies = np.array(layer_initial_accuracies)[sorted_indices]
-            layer_trained_accuracies = np.array(layer_trained_accuracies)[sorted_indices]
-            
-            # Plot data
-            line_width = 2.2
-            marker_size = 6
-            
-            # Plot TFIDF accuracy (horizontal line)
-            ax.axhline(y=tfidf_accuracy, color='gray', linestyle='-.', linewidth=1.8, alpha=0.7, label='TF-IDF')
-            
-            # Plot initial state accuracy
-            ax.plot(layers, layer_initial_accuracies, color=colors[model_type]['light'], 
-                    linestyle='--', linewidth=line_width, marker='o', markersize=marker_size, 
-                    label='Initial')
-            
-            # Plot trained state accuracy
-            ax.plot(layers, layer_trained_accuracies, color=colors[model_type]['base'], 
-                    linestyle='-', linewidth=line_width, marker='s', markersize=marker_size, 
-                    label='Trained')
-            
-            # Set plot properties
-            ax.set_ylim(0.45, 0.85)
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-            ax.grid(True, linestyle='--', alpha=0.3)
-            
-            # Add title for first row only
-            if stage_idx == 0:
-                ax.set_title(column_titles[model_idx], fontsize=16)
-            
-            # Add epoch info to the plot
-            ax.annotate(f"e{target_epoch}", xy=(0.05, 0.95), xycoords='axes fraction', 
-                        fontsize=14, ha='left', va='top',
-                        bbox=dict(boxstyle="round,pad=0.3", fc='white', ec='gray', alpha=0.7))
-            
-            # Add legend only to the first column
-            if model_idx == 0:
-                ax.legend(loc='upper center', fontsize=10, frameon=False)
-            
-            # Add y-label only to the first column
-            if model_idx == 0:
-                ax.set_ylabel('Probing Accuracy', fontsize=14)
-            
-            # Add x-label only to the last row
-            if stage_idx == 4:
-                ax.set_xlabel('Layer', fontsize=14)
-            
-            # Add stage labels to the left side
-            if model_idx == 0:
-                # Add text to the left of the plot
-                fig.text(0.01, ax.get_position().y0 + ax.get_position().height/2, 
-                         stage_title, fontsize=14, ha='left', va='center', rotation=90)
-    
-    # Add overall title
-    plt.suptitle('Probing Accuracy Across Training Stages', fontsize=18, y=0.995)
-    
-    # Save the figure
-    fig_path = os.path.join(output_dir, "stage_visualization_grid.png")
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-    print(f"Saved grid visualization to {fig_path}")
-    
-    return fig_path
+    def __getitem__(self, idx):
+        encoding = self.tokenizer(
+            self.texts[idx], 
+            return_tensors='pt', 
+            max_length=self.max_len, 
+            padding='max_length', 
+            truncation=True
+        )
+        return {key: val.squeeze(0) for key, val in encoding.items()}
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate probing accuracy visualizations.")
-    parser.add_argument("--results_file", type=str, required=True, 
-                        help="Path to the JSON file with probing results.")
-    parser.add_argument("--epochs", type=str, required=True,
-                        help="Comma-separated list/ranges of epochs to visualize.")
-    parser.add_argument("--output_dir", type=str, default="./probing_viz",
-                        help="Directory to save visualization outputs.")
-    parser.add_argument("--model_runs", type=str, nargs='+', default=None,
-                        help="List of model run names to include in visualization.")
-    
+    parser = argparse.ArgumentParser(description="Run probing analysis on saved [CLS] hidden states.")
+    parser.add_argument("--feature_base_dir", type=str, required=True, 
+                        help="Base directory containing subfolders for each model run.")
+    parser.add_argument("--model_runs", type=str, required=True, nargs='+', 
+                        help="List of *trained* model run subfolder names to analyze.")
+    parser.add_argument("--model_types", type=str, required=True, nargs='+', 
+                        help="Corresponding model types ('base', 'conv2d', 'fft') for each run.")
+    parser.add_argument("--data_dir", type=str, default="../data/sst2", 
+                        help="Directory containing the SST-2 dataset.")
+    parser.add_argument("--layers", type=str, default="0,6,12", 
+                        help="Comma-separated list/ranges of layer indices to probe.")
+    parser.add_argument("--epochs", type=str, default=None, 
+                        help="Comma-separated list/ranges of epoch indices to probe.")
+    parser.add_argument("--output_file", type=str, default="./probing_results.json", 
+                        help="Path to save the probing results (JSON format).")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--device", type=str, default=None, 
+                        help="Device to use ('cuda', 'cpu'). Auto-detects if None.")
+    parser.add_argument("--batch_size", type=int, default=32, 
+                        help="Batch size for extracting initial hidden states.")
+    parser.add_argument("--max_seq_length", type=int, default=128, 
+                        help="Max sequence length for tokenizer.")
+
     args = parser.parse_args()
-    
-    # Parse epochs
-    epochs_to_viz = parse_range_or_list(args.epochs)
-    if not epochs_to_viz:
-        print("Error: No valid epochs specified.")
-        return
-    
-    # Load results
+    set_seed(args.seed)
+
+    # Setup device
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    print(f"Using device: {device}")
+
+    # Parse layers/epochs
+    layers_to_probe = parse_range_or_list(args.layers) or set(range(13))  # Default 0-12 if not specified
+    epochs_to_probe = parse_range_or_list(args.epochs)  # None means probe all found epochs
+
+    # Load data
+    print("Loading SST-2 data...")
     try:
-        with open(args.results_file, 'r') as f:
-            results = json.load(f)
+        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        config = BertConfig.from_pretrained('bert-base-uncased')
+
+        # Load train and dev splits
+        sst2_splits = load_sst2()
+        train_texts = sst2_splits['train']['text'].tolist()
+        dev_texts = sst2_splits['dev']['text'].tolist()
+        dev_labels_sentiment = sst2_splits['dev']['label'].to_numpy()
+
+        # Calculate FKGL scores
+        print("Calculating Flesch-Kincaid Grade Level scores for dev set...")
+        dev_fkgl_scores = np.array([textstat.flesch_kincaid_grade(text) for text in tqdm(dev_texts, desc="FKGL Calc")])
+
+        # Create TF-IDF features
+        print("Calculating TF-IDF features for dev set...")
+        vectorizer = TfidfVectorizer(max_features=5000)
+        vectorizer.fit(train_texts)
+        X_dev_tfidf = vectorizer.transform(dev_texts).toarray()
+        print(f"  TF-IDF feature shape: {X_dev_tfidf.shape}")
+
+        # Create dataloader for dev set
+        dev_dataset = TextDataset(dev_texts, tokenizer, args.max_seq_length)
+        dev_dataloader = torch.utils.data.DataLoader(dev_dataset, batch_size=args.batch_size)
+
     except Exception as e:
-        print(f"Error loading results file: {e}")
-        return
+        print(f"Error during data loading or preprocessing: {e}")
+        sys.exit(1)
+
+    # Extract initial hidden states
+    initial_hidden_states = {}
+    print("\n--- Extracting Initial Hidden States (Untrained Models) ---")
+    for model_type in set(args.model_types):  # Use set to avoid duplicate extraction
+        initial_hidden_states[model_type] = {}
+        untrained_model = get_model_instance_probe(model_type, config, checkpoint_path=None, device=device)
+        
+        for layer in layers_to_probe:
+            X_dev_initial = extract_cls_hidden_states(untrained_model, dev_dataloader, layer, device)
+            if X_dev_initial is not None and X_dev_initial.shape[0] == len(dev_labels_sentiment):
+                initial_hidden_states[model_type][layer] = X_dev_initial
+            else:
+                print(f"Warning: Initial hidden state extraction failed for {model_type} layer {layer}")
+                initial_hidden_states[model_type][layer] = None
+        
+        del untrained_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # Main probing loop
+    all_results = {}
+    print("\n--- Starting Probing Analysis ---")
+
+    if len(args.model_runs) != len(args.model_types):
+        print("Error: Number of --model_runs must match number of --model_types.")
+        sys.exit(1)
+
+    # Run baseline probes once (TF-IDF features)
+    print("Running Baseline Probes (TF-IDF Features)...")
+    tfidf_sentiment_results = run_probe(X_dev_tfidf, dev_labels_sentiment, probe_type='classification', random_state=args.seed)
+    tfidf_fkgl_results = run_probe(X_dev_tfidf, dev_fkgl_scores, probe_type='regression', random_state=args.seed)
+    print(f" TF-IDF Sentiment Accuracy: {tfidf_sentiment_results.get('accuracy', 'Error'):.4f}")
+    print(f"TF-IDF FKGL R^2: {tfidf_fkgl_results.get('r2', 'Error'):.4f}, Neg MSE: {tfidf_fkgl_results.get('neg_mse', 'Error'):.4f}")
     
-    # If no specific model runs provided, use all in the results
-    if args.model_runs is None:
-        args.model_runs = list(results.keys())
-    else:
-        # Validate model runs
-        for model_run in args.model_runs:
-            if model_run not in results:
-                print(f"Warning: Model run '{model_run}' not found in results. Skipping.")
-        args.model_runs = [m for m in args.model_runs if m in results]
-    
-    if not args.model_runs:
-        print("Error: No valid model runs found.")
-        return
-    
-    # Define colors for each model type
-    colors = {
-        "base": {"base": "#2A4F74", "light": "#6A8FB4"},  # Dark and light steel blue
-        "conv": {"base": "#1C5B3A", "light": "#5C9B7A"},  # Dark and light sea green
-        "fft": {"base": "#CC594E", "light": "#EC898E"}    # Dark and light coral pink
+    baseline_tfidf_results = {
+        'sentiment_probe': tfidf_sentiment_results,
+        'fkgl_probe': tfidf_fkgl_results
     }
-    
-    # Map model types to display names
-    label_map = {
-        "base": "Base",
-        "conv": "Conv2D",
-        "fft": "FFT"
-    }
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-    
-    # Generate individual model visualizations
-    for model_run in args.model_runs:
-        plot_model_probing_accuracy(results, model_run, epochs_to_viz, args.output_dir, colors, label_map)
-    
-    # Define stage epochs for each model [Base, Conv2D, FFT]
-    stage_epochs = [
-        [0, 0, 0],      # Stage 0
-        [1, 1, 4],      # Stage 1
-        [3, 5, 7],      # Stage 2
-        [5, 6, 10],     # Stage 3
-        [6, 9, 13]      # Stage 4
-    ]
-    
-    # Create the 5x3 grid visualization
-    create_stage_visualization(results, args.model_runs, stage_epochs, args.output_dir, colors, label_map)
-    
-    print("Visualization generation complete.")
+
+    # Process each model run
+    for model_run_name, model_type in zip(args.model_runs, args.model_types):
+        print(f"\n--- Probing Model Run: {model_run_name} (Type: {model_type}) ---")
+        model_feature_dir = os.path.join(args.feature_base_dir, model_run_name)
+        all_results[model_run_name] = {'baseline_tfidf': baseline_tfidf_results}
+
+        if not os.path.isdir(model_feature_dir):
+            print(f"Warning: Directory not found '{model_feature_dir}'. Skipping.")
+            continue
+
+        run_files = find_feature_files(model_feature_dir, layers_to_probe, epochs_to_probe)
+        if not run_files:
+            print(f"No valid data files found for this run matching specified layers/epochs.")
+            continue
+
+        # Process each epoch
+        for epoch in sorted(run_files.keys()):
+            print(f"  Processing Epoch {epoch}...")
+            epoch_str = f"epoch_{epoch}"
+            all_results[model_run_name][epoch_str] = {}
+
+            labels_path = run_files[epoch]['labels']
+            layer_files = run_files[epoch]['layers']
+
+            # Load labels and validate
+            try:
+                y_trained_sentiment = np.load(labels_path)
+                if not np.array_equal(y_trained_sentiment, dev_labels_sentiment):
+                    print(f"Warning: Labels mismatch for epoch {epoch}. Using expected dev labels.")
+                if len(y_trained_sentiment) != len(dev_fkgl_scores):
+                    print(f"Error: Label count ({len(y_trained_sentiment)}) doesn't match FKGL score count ({len(dev_fkgl_scores)}). Skipping epoch.")
+                    continue
+            except Exception as e:
+                print(f"Error loading labels from {labels_path}: {e}. Skipping epoch {epoch}.")
+                continue
+
+            # Process each layer
+            for layer in sorted(layer_files.keys()):
+                layer_str = f"layer_{layer}"
+                print(f"    Probing Layer {layer}...")
+                all_results[model_run_name][epoch_str][layer_str] = {}
+                feature_path = layer_files[layer]
+
+                # Load trained hidden states
+                try:
+                    X_trained = np.load(feature_path)
+                    if X_trained.shape[0] != len(dev_labels_sentiment):
+                        print(f"Error: Trained hidden state count ({X_trained.shape[0]}) mismatch. Skipping layer {layer}.")
+                        continue
+                except Exception as e:
+                    print(f"Error loading trained features from {feature_path}: {e}. Skipping layer {layer}.")
+                    continue
+
+                # Run baseline probe (initial hidden states)
+                X_initial = initial_hidden_states.get(model_type, {}).get(layer)
+                if X_initial is not None:
+                    print(f"      Running Baseline Probe (Initial Hidden States)...")
+                    initial_sentiment_results = run_probe(X_initial, dev_labels_sentiment, probe_type='classification', random_state=args.seed)
+                    initial_fkgl_results = run_probe(X_initial, dev_fkgl_scores, probe_type='regression', random_state=args.seed)
+                    
+                    print(f"        Initial State Sentiment Accuracy: {initial_sentiment_results.get('accuracy', 'Error'):.4f}")
+                    print(f"        Initial State FKGL R^2: {initial_fkgl_results.get('r2', 'Error'):.4f}, "
+                          f"Neg MSE: {initial_fkgl_results.get('neg_mse', 'Error'):.4f}")
+                    
+                    all_results[model_run_name][epoch_str][layer_str]['baseline_initial_state'] = {
+                        'sentiment_probe': initial_sentiment_results,
+                        'fkgl_probe': initial_fkgl_results
+                    }
+                else:
+                    print(f"      Skipping Baseline Probe (Initial Hidden States not available).")
+
+                # Run main probe (trained hidden states)
+                print(f"      Running Main Probe (Trained Hidden States)...")
+                trained_sentiment_results = run_probe(X_trained, dev_labels_sentiment, probe_type='classification', random_state=args.seed)
+                trained_fkgl_results = run_probe(X_trained, dev_fkgl_scores, probe_type='regression', random_state=args.seed)
+                
+                print(f"        Trained State Sentiment Accuracy: {trained_sentiment_results.get('accuracy', 'Error'):.4f}")
+                print(f"        Trained State FKGL R^2: {trained_fkgl_results.get('r2', 'Error'):.4f}, "
+                      f"Neg MSE: {trained_fkgl_results.get('neg_mse', 'Error'):.4f}")
+                
+                all_results[model_run_name][epoch_str][layer_str]['main_trained_state'] = {
+                    'sentiment_probe': trained_sentiment_results,
+                    'fkgl_probe': trained_fkgl_results
+                }
+
+    # Save results
+    print(f"\nSaving probing results to {args.output_file}...")
+    try:
+        os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
+        with open(args.output_file, 'w') as f:
+            # Convert numpy types for JSON serialization
+            def convert(o):
+                if isinstance(o, np.generic):
+                    return o.item()
+                raise TypeError
+            json.dump(all_results, f, indent=4, default=convert)
+        print("Results saved successfully.")
+    except Exception as e:
+        print(f"Error saving results to JSON: {e}")
+
+    print("\nProbing analysis finished.")
 
 if __name__ == "__main__":
     main()
